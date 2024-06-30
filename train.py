@@ -35,6 +35,8 @@ from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_di
 
 logger = logging.getLogger(__name__)
 
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
 try:
     import wandb
 except ImportError:

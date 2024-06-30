@@ -125,6 +125,7 @@ def compute_loss(p, targets, model):  # predictions, targets, model
 
 
 def build_targets(p, targets, model):
+    device = targets.device
     nt = targets.shape[0]  # number of anchors, targets
     tcls, tbox, indices, anch = [], [], [], []
     gain = torch.ones(6, device=targets.device)  # normalized to gridspace gain
@@ -141,7 +142,7 @@ def build_targets(p, targets, model):
         a, t, offsets = [], targets * gain, 0
         if nt:
             na = anchors.shape[0]  # number of anchors
-            at = torch.arange(na).view(na, 1).repeat(1, nt)  # anchor tensor, same as .repeat_interleave(nt)
+            at = torch.arange(na).view(na, 1).repeat(1, nt).to(device)  # anchor tensor, same as .repeat_interleave(nt)
             r = t[None, :, 4:6] / anchors[:, None]  # wh ratio
             j = torch.max(r, 1. / r).max(2)[0] < model.hyp['anchor_t']  # compare
             # j = wh_iou(anchors, t[:, 4:6]) > model.hyp['iou_t']  # iou(3,n) = wh_iou(anchors(3,2), gwh(n,2))
@@ -164,7 +165,7 @@ def build_targets(p, targets, model):
 
         # Append
         #indices.append((b, a, gj, gi))  # image, anchor, grid indices
-        indices.append((b, a, gj.clamp_(0, gain[3] - 1), gi.clamp_(0, gain[2] - 1)))  # image, anchor, grid indices
+        indices.append((b, a, gj.clamp_(0, int(gain[3] - 1)), gi.clamp_(0, int(gain[2] - 1))))  # image, anchor, grid indices
         tbox.append(torch.cat((gxy - gij, gwh), 1))  # box
         anch.append(anchors[a])  # anchors
         tcls.append(c)  # class
