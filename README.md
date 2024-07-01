@@ -216,3 +216,31 @@ python test.py --img 640 --conf 0.001 --batch 8 --device 0 --data coco.yaml --cf
 * [https://github.com/AlexeyAB/darknet](https://github.com/AlexeyAB/darknet)
 * [https://github.com/ultralytics/yolov3](https://github.com/ultralytics/yolov3)
 * [https://github.com/ultralytics/yolov5](https://github.com/ultralytics/yolov5)
+
+
+## 关于如何训练自己的数据集
+1. 需要增加一个自己的yaml训练数据说明文件，如coco.yaml
+2. 需要增加一个自己的cfg网络结构文件，然后修改其中的yolo类别数以及每个yolo层前一个卷积层的filter数
+
+要将YOLOv4配置适配到221个类别的数据集,需要修改以下几个地方:
+1. 修改classes数量
+在三个[yolo]层中,将classes=80改为:
+classes=221
+1. 修改filters数量
+在每个[yolo]层之前的[convolutional]层中,将filters=255改为:
+filters=678
+计算方法是:(classes + 5) * 3,即(221 + 5) * 3 = 678
+需要修改的三处[convolutional]层是:
+- 第1处:[convolutional]在第一个[yolo]层之前
+- 第2处:[convolutional]在第二个[yolo]层之前  
+- 第3处:[convolutional]在第三个[yolo]层之前
+1. 可选:调整max_batches和steps
+根据新的类别数,可以适当增加max_batches的值,比如:
+max_batches = 500000
+steps=400000,450000
+1. 可选:修改anchors
+如果你的数据集物体尺寸与COCO数据集差异较大,可以考虑重新计算anchors。
+1. 检查其他参数
+确保其他参数如width、height等符合你的需求。
+记得在训练时也要相应修改数据配置文件(.data文件),将classes数量改为221。
+这些修改将使YOLOv4配置适配到221类的新数据集。在训练时密切关注loss变化,必要时调整学习率等超参数。

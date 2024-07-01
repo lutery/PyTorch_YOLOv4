@@ -21,11 +21,11 @@
                 "--data",
                 "./data/tk100.yaml",
                 "--cfg",
-                "./cfg/yolov4.cfg",
+                "./cfg/yolov4-tk100.cfg",
                 "--weights",
                 "' '",
                 "--name",
-                "yolov4"
+                "yolov4-tk100"
             ]
         }
     ]
