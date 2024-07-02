@@ -244,3 +244,5 @@ steps=400000,450000
 确保其他参数如width、height等符合你的需求。
 记得在训练时也要相应修改数据配置文件(.data文件),将classes数量改为221。
 这些修改将使YOLOv4配置适配到221类的新数据集。在训练时密切关注loss变化,必要时调整学习率等超参数。
+
+训练命令：python .\train.py --device 1 --batch-size 2 --img 640 640 --data tk100.yaml --cfg cfg/yolov4-tk100.cfg --weights ' ' --name yolov4-tk100 --resume M:/Projects/openSource/python/yolo/PyTorch_YOLOv4/runs/train/yolov4-tk1005/weights/last.pt

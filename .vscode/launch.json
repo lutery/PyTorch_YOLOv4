@@ -25,7 +25,9 @@
                 "--weights",
                 "' '",
                 "--name",
-                "yolov4-tk100"
+                "yolov4-tk100",
+                "--resume",
+                "M:/Projects/openSource/python/yolo/PyTorch_YOLOv4/runs/train/yolov4-tk1005/weights/last.pt"
             ]
         }
     ]
