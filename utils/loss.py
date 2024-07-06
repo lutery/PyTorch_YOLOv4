@@ -135,7 +135,7 @@ def build_targets(p, targets, model):
     multi_gpu = is_parallel(model)
     for i, jj in enumerate(model.module.yolo_layers if multi_gpu else model.yolo_layers):
         # get number of grid points and anchor vec for this yolo layer
-        anchors = model.module.module_list[jj].anchor_vec if multi_gpu else model.module_list[jj].anchor_vec
+        anchors = (model.module.module_list[jj].anchor_vec if multi_gpu else model.module_list[jj].anchor_vec).to(device)
         gain[2:] = torch.tensor(p[i].shape)[[3, 2, 3, 2]]  # xyxy gain
 
         # Match targets to anchors
