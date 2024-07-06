@@ -246,3 +246,5 @@ steps=400000,450000
 这些修改将使YOLOv4配置适配到221类的新数据集。在训练时密切关注loss变化,必要时调整学习率等超参数。
 
 训练命令：python .\train.py --device 1 --batch-size 2 --img 640 640 --data tk100.yaml --cfg cfg/yolov4-tk100.cfg --weights ' ' --name yolov4-tk100 --resume M:/Projects/openSource/python/yolo/PyTorch_YOLOv4/runs/train/yolov4-tk1005/weights/last.pt
+
+linux训练命令：python train.py --device 1 --batch-size 4 --img 640 640 --data tk100.yaml --cfg cfg/yolov4-tk100.cfg --weights ' ' --name yolov4-tk100 --resume /home/lutery/projects/python/PyTorch_YOLOv4/runs/train/yolov4-tk1005/weights/last.pt
