@@ -115,10 +115,25 @@ class WeightedFeatureFusion(nn.Module):  # weighted sum of 2 or more layers http
 
 class MixConv2d(nn.Module):  # MixConv: Mixed Depthwise Convolutional Kernels https://arxiv.org/abs/1907.09595
     def __init__(self, in_ch, out_ch, k=(3, 5, 7), stride=1, dilation=1, bias=True, method='equal_params'):
+        '''
+        多尺度卷积，这段代码属于多尺度卷积层（MixConv2d）的构造部分，主要作用是将总输出通道数（out_ch）按两种策略分成多个组，每个组对应一个不同的卷积核大小，从而实现多尺度特征提取。具体过程如下
+
+        params in_ch: int, 输入通道数
+        params out_ch: int, 输出通道数
+        params k: tuple, 卷积核大小
+        params stride: int, 步长
+        params dilation: int, 膨胀率
+        params bias: bool, 是否使用偏置
+        params method: str, 'equal_params' or 'equal_ch', 每个组的参数数量相等或每个组的通道数相等
+        '''
         super(MixConv2d, self).__init__()
 
         groups = len(k)
+        # todo 详细了解这边的操作
         if method == 'equal_ch':  # equal channels per group
+            # 将输出通道数分成groups组，每组的输出通道数相等
+            # groups - 1E-6防止除0
+            # torch.linspace(0, groups - 1E-6, out_ch)生成一个从0到groups-1E-6的等差数列
             i = torch.linspace(0, groups - 1E-6, out_ch).floor()  # out_ch indices
             ch = [(i == g).sum() for g in range(groups)]
         else:  # 'equal_params': equal parameter count per group

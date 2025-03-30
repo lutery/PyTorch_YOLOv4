@@ -20,12 +20,22 @@ logger = logging.getLogger(__name__)
 def torch_distributed_zero_first(local_rank: int):
     """
     Decorator to make all processes in distributed training wait for each local_master to do something.
+    是一个上下文管理器，用于分布式训练中进程间的同步，确保只有指定的主进程（通常是 local_rank 为 0 的进程）先执行某些关键操作，其它进程则在此处等待
+    仅仅只是确认分布式训练时，进程之间的同步
+
+    主进程进来先到yield
+    从进程进行进入到local_rank not in [-1, 0]:内部，激活主进程
+    从进程到yield则停止
+    主进程因为激活开始执行外部的代码
+    完成后，主进程执行 if local_rank == 0:的代码激活从进程
+    这样就保证了这个期间的代码是主进程先执行的
     """
     if local_rank not in [-1, 0]:
         torch.distributed.barrier()
+    # 在 yield 处，进入上下文管理器内部代码块，此时主进程和等待的从进程都可以继续执行上下文内的代码，但从进程是在等待主进程先完成关键操作
     yield
     if local_rank == 0:
-        torch.distributed.barrier()
+        torch.distributed.barrier() 
 
 
 def init_torch_seeds(seed=0):

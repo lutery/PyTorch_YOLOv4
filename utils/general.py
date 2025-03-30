@@ -77,6 +77,9 @@ def check_file(file):
 
 def check_dataset(dict):
     # Download dataset if not found locally
+    '''
+    下载数据集，如果本地不存在则下载，需要在yaml文件中指定下载链接
+    '''
     val, s = dict.get('val'), dict.get('download')
     if val and len(val):
         val = [Path(x).resolve() for x in (val if isinstance(val, list) else [val])]  # val path

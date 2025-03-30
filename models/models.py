@@ -7,24 +7,39 @@ ONNX_EXPORT = False
 
 
 def create_modules(module_defs, img_size, cfg):
+    '''
+    param module_defs: list of module definitions,每个模块用一个字典表示
+    param img_size: 输入图片的大小
+    param cfg: cfg文件的路径 todo 为啥还要传入原始cfg
+    大概因为是从yolov3 pytorch版本修改过来的，所以注释中有很多yolov3的注释
+    '''
     # Constructs module list of layer blocks from module configuration in module_defs
-
+    
     img_size = [img_size] * 2 if isinstance(img_size, int) else img_size  # expand if necessary
     _ = module_defs.pop(0)  # cfg training hyperparams (unused)
-    output_filters = [3]  # input channels
+    output_filters = [3]  # input channels # 处理彩色图片，如果是黑白图片还要手动修改
     module_list = nn.ModuleList()
     routs = []  # list of layers which rout to deeper layers
     yolo_index = -1
 
+    # 遍历每一个模块的定义
     for i, mdef in enumerate(module_defs):
         modules = nn.Sequential()
 
         if mdef['type'] == 'convolutional':
+            # 处理当前模块是卷积的情况
+            # 归一化层的参数
             bn = mdef['batch_normalize']
+            # 卷积核的数量
             filters = mdef['filters']
+            # 卷积核的尺寸
             k = mdef['size']  # kernel size
+            # 处理步长
             stride = mdef['stride'] if 'stride' in mdef else (mdef['stride_y'], mdef['stride_x'])
             if isinstance(k, int):  # single-size conv
+                # 如果卷积核是一个尺寸
+                # bias=not bn可以看出使用了bn则不使用bias
+                # mdef['groups']是否使用分组卷积
                 modules.add_module('Conv2d', nn.Conv2d(in_channels=output_filters[-1],
                                                        out_channels=filters,
                                                        kernel_size=k,
@@ -33,6 +48,7 @@ def create_modules(module_defs, img_size, cfg):
                                                        groups=mdef['groups'] if 'groups' in mdef else 1,
                                                        bias=not bn))
             else:  # multiple-size conv
+                # 卷积核是不同的尺寸
                 modules.add_module('MixConv2d', MixConv2d(in_ch=output_filters[-1],
                                                           out_ch=filters,
                                                           k=k,
@@ -446,6 +462,9 @@ class Darknet(nn.Module):
     # YOLOv3 object detection model
 
     def __init__(self, cfg, img_size=(416, 416), verbose=False):
+        '''
+        构建yolov4的模型，使用的是Darknet的cfg文件形式解析构建
+        '''
         super(Darknet, self).__init__()
 
         self.module_defs = parse_model_cfg(cfg)

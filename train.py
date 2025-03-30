@@ -44,6 +44,14 @@ except ImportError:
     logger.info("Install Weights & Biases for experiment logging via 'pip install wandb' (recommended)")
 
 def train(hyp, opt, device, tb_writer=None, wandb=None):
+    '''
+    训练
+    param hyp: 训练的超参数
+    param opt: 训练的参数
+    param device: 训练的设备
+    param tb_writer: tensorboard的writer
+    param wandb: wandb的writer
+    '''
     logger.info(f'Hyperparameters {hyp}')
     save_dir, epochs, batch_size, total_batch_size, weights, rank = \
         Path(opt.save_dir), opt.epochs, opt.batch_size, opt.total_batch_size, opt.weights, opt.global_rank
@@ -56,6 +64,7 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
     results_file = save_dir / 'results.txt'
 
     # Save run settings
+    # 这里是将本次训练的参数保存到文件中，保持训练的一致性
     with open(save_dir / 'hyp.yaml', 'w') as f:
         yaml.dump(hyp, f, sort_keys=False)
     with open(save_dir / 'opt.yaml', 'w') as f:
@@ -65,19 +74,27 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
     plots = not opt.evolve  # create plots
     cuda = device.type != 'cpu'
     init_seeds(2 + rank)
+    # 加载数据集信息
     with open(opt.data) as f:
         data_dict = yaml.load(f, Loader=yaml.FullLoader)  # data dict
     with torch_distributed_zero_first(rank):
+        # 这边就是在确保只有一个线程才会执行下载数据集，通过yield操作
         check_dataset(data_dict)  # check
     train_path = data_dict['train']
     test_path = data_dict['val']
+    # single_cls表示只有一个类别，如果不是则从yaml中的获取类别数和类别名称
     nc, names = (1, ['item']) if opt.single_cls else (int(data_dict['nc']), data_dict['names'])  # number classes, names
     assert len(names) == nc, '%g names found for nc=%g dataset in %s' % (len(names), nc, opt.data)  # check
 
     # Model
+    # 如果传入的权重，则加载权重
+    # 如果不想下载权重，则传入空字符串
+    # 而这里的代码必须要传入空串，因为内部的下载代码是去下载另一个yolov4 scaled的权重
+    # 并且下载的路径只能时他们的路径，而不能时自己的
     pretrained = weights.endswith('.pt')
     if pretrained:
         with torch_distributed_zero_first(rank):
+            # 又是在确保只有一个线程才会执行下载数据集，通过yield操作
             attempt_download(weights)  # download if not found locally
         ckpt = torch.load(weights, map_location=device)  # load checkpoint
         model = Darknet(opt.cfg).to(device)  # create
@@ -489,8 +506,10 @@ if __name__ == '__main__':
 
     # Set DDP variables
     opt.total_batch_size = opt.batch_size
+    # WORLD_SIZE 参数主要用于分布式训练场景中，表示训练过程中总的进程数（通常对应使用的 GPU 数量）。当使用分布式数据并行 (DDP) 训练时，该参数帮助代码确定如何分配数据、同步梯度以及调整优化参数。如果没有设置，则默认为 1，即单 GPU 或单进程训练。
     opt.world_size = int(os.environ['WORLD_SIZE']) if 'WORLD_SIZE' in os.environ else 1
     opt.global_rank = int(os.environ['RANK']) if 'RANK' in os.environ else -1
+    # 设置日志等级
     set_logging(opt.global_rank)
     if opt.global_rank in [-1, 0]:
         check_git_status()
@@ -513,6 +532,28 @@ if __name__ == '__main__':
         opt.save_dir = increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok | opt.evolve)  # increment run
 
     # DDP mode
+    '''
+    这段代码主要用于选择和配置设备，支持单卡和分布式（DDP）训练，具体流程如下：
+
+    - **选择设备**  
+    `device = select_device(opt.device, batch_size=opt.batch_size)` 调用 `select_device` 函数，根据传入的设备参数（例如 'cpu' 或 'cuda'）以及批量大小，自动选择合适的计算设备。
+
+    - **分布式训练判断**  
+    `if opt.local_rank != -1:` 判断是否处于分布式训练模式，如果 `local_rank` 不等于 -1，表示是使用分布式数据并行（DDP）训练。
+
+    - **设置当前 GPU**  
+    `assert torch.cuda.device_count() > opt.local_rank` 确保系统中有足够的 GPU，然后用  
+    `torch.cuda.set_device(opt.local_rank)` 指定当前进程使用的 GPU，并将 `device` 更新为该 GPU。
+
+    - **初始化分布式后端**  
+    `dist.init_process_group(backend='nccl', init_method='env://')` 使用 NCCL 后端并通过环境变量进行初始化，建立各进程之间的通信。
+
+    - **调整批量大小**  
+    `assert opt.batch_size % opt.world_size == 0` 确保每个 GPU 得到的批量大小是整数，然后通过  
+    `opt.batch_size = opt.total_batch_size // opt.world_size` 计算出每个 GPU 实际使用的批量大小。
+
+    这段代码保证了在多 GPU 分布式训练模式下，每个进程能正确选定自己的 GPU，并通过 NCCL 通信来同步训练。
+    '''
     device = select_device(opt.device, batch_size=opt.batch_size)
     if opt.local_rank != -1:
         assert torch.cuda.device_count() > opt.local_rank
@@ -523,6 +564,7 @@ if __name__ == '__main__':
         opt.batch_size = opt.total_batch_size // opt.world_size
 
     # Hyperparameters
+    # 加载训练的超参数，一般就是学习率哪些的
     with open(opt.hyp) as f:
         hyp = yaml.load(f, Loader=yaml.FullLoader)  # load hyps
         if 'box' not in hyp:
@@ -533,6 +575,7 @@ if __name__ == '__main__':
     # Train
     logger.info(opt)
     if not opt.evolve:
+        # 如果不是在探索那种超参数更好则直接训练
         tb_writer = None  # init loggers
         if opt.global_rank in [-1, 0]:
             logger.info(f'Start Tensorboard with "tensorboard --logdir {opt.project}", view at http://localhost:6006/')
@@ -541,6 +584,7 @@ if __name__ == '__main__':
 
     # Evolve hyperparameters (optional)
     else:
+        # 这边就是在探索超参数了
         # Hyperparameter evolution metadata (mutation scale 0-1, lower_limit, upper_limit)
         meta = {'lr0': (1, 1e-5, 1e-1),  # initial learning rate (SGD=1E-2, Adam=1E-3)
                 'lrf': (1, 0.01, 1.0),  # final OneCycleLR learning rate (lr0 * lrf)
