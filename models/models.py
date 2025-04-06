@@ -17,9 +17,9 @@ def create_modules(module_defs, img_size, cfg):
     
     img_size = [img_size] * 2 if isinstance(img_size, int) else img_size  # expand if necessary
     _ = module_defs.pop(0)  # cfg training hyperparams (unused)
-    output_filters = [3]  # input channels # 处理彩色图片，如果是黑白图片还要手动修改
+    output_filters = [3]  # input channels # 处理彩色图片，如果是黑白图片还要手动修改 值的事当前层的输入通道数
     module_list = nn.ModuleList()
-    routs = []  # list of layers which rout to deeper layers 指向更深层的层的列表 用于残差链接
+    routs = []  # list of layers which rout to deeper layers 指向更深层的层的列表 用于残差链接，todo 具体如何运作的
     yolo_index = -1
 
     # 遍历每一个模块的定义
