@@ -43,25 +43,65 @@ class Concat(nn.Module):
 
 class FeatureConcat(nn.Module):
     def __init__(self, layers):
+        '''
+        输入的layers是一个列表，表示需要拼接的特征图的索引
+        例如，layers = [0, 1, 2]表示需要拼接第0、1、2个特征图
+        '''
         super(FeatureConcat, self).__init__()
         self.layers = layers  # layer indices
-        self.multiple = len(layers) > 1  # multiple layers flag
+        self.multiple = len(layers) > 1  # multiple layers flag # 是否有多个层需要拼接
 
     def forward(self, x, outputs):
+        '''
+        param x: 输入的特征图
+        param outputs: 输出的特征图 这个应该时目前已经计算好的特征图
+        '''
+        # 从已经计算好的特征图中取出需要拼接的特征图
+        # 如果有多个层需要拼接，则将它们拼接在一起
+        # 否则直接返回第一个特征图
+        # 这里的拼接是沿着通道的维度进行拼接
+        # 例如，输入的特征图是[1, 3, 224, 224]，表示batch_size=1，通道数=3，宽高=224
+        # 如果layers=[0, 1, 2]，则拼接后的特征图是[1, 9, 224, 224]
+        # 如果layers=[0]，则返回[1, 3, 224, 224]
+        '''
+        为什么这里不使用detach()？todo
+        不太清楚，可能实际使用时却是不需要使用，不过由于cfg中没有使用FeatureConcat2和FeatureConcat3，也不太好对比
+        '''
         return torch.cat([outputs[i] for i in self.layers], 1) if self.multiple else outputs[self.layers[0]]
 
 
 class FeatureConcat2(nn.Module):
+    '''
+    与FeatureConcat类似，但是只拼接两个特征图
+    这个类主要是为了在拼接两个特征图时，避免使用FeatureConcat类的多余操作
+    '''
     def __init__(self, layers):
         super(FeatureConcat2, self).__init__()
         self.layers = layers  # layer indices
         self.multiple = len(layers) > 1  # multiple layers flag
 
     def forward(self, x, outputs):
+        '''
+        为什么使用detach()？
+        因为在拼接特征图时，可能会导致梯度计算错误
+        例如，假设有两个特征图A和B，A的梯度是dA，B的梯度是dB
+        如果直接拼接它们，得到的特征图C的梯度是dC
+        dC = dA + dB
+        但是如果在拼接时，B的梯度被计算了，那么dC就会变成dA + dB + dB
+        这样就会导致梯度计算错误
+        所以在拼接时，将B的梯度计算关闭，使用detach()函数
+        这样就不会计算B的梯度了
+        这样就可以避免梯度计算错误
+        
+        '''
         return torch.cat([outputs[self.layers[0]], outputs[self.layers[1]].detach()], 1)
 
 
 class FeatureConcat3(nn.Module):
+    '''
+    与FeatureConcat类似，但是只拼接三个特征图
+    这个类主要是为了在拼接两个特征图时，避免使用FeatureConcat类的多余操作
+    '''
     def __init__(self, layers):
         super(FeatureConcat3, self).__init__()
         self.layers = layers  # layer indices
@@ -117,6 +157,8 @@ class MixConv2d(nn.Module):  # MixConv: Mixed Depthwise Convolutional Kernels ht
     def __init__(self, in_ch, out_ch, k=(3, 5, 7), stride=1, dilation=1, bias=True, method='equal_params'):
         '''
         多尺度卷积，这段代码属于多尺度卷积层（MixConv2d）的构造部分，主要作用是将总输出通道数（out_ch）按两种策略分成多个组，每个组对应一个不同的卷积核大小，从而实现多尺度特征提取。具体过程如下
+        是一种 混合深度卷积（Mixed Depthwise Convolution），其核心思想是通过使用不同大小的卷积核（kernel size）来提取多尺度特征
+        这种卷积主要用于需要捕获多尺度特征的场景，比如目标检测、语义分割等任务
 
         params in_ch: int, 输入通道数
         params out_ch: int, 输出通道数
@@ -133,10 +175,29 @@ class MixConv2d(nn.Module):  # MixConv: Mixed Depthwise Convolutional Kernels ht
         if method == 'equal_ch':  # equal channels per group
             # 将输出通道数分成groups组，每组的输出通道数相等
             # groups - 1E-6防止除0
-            # torch.linspace(0, groups - 1E-6, out_ch)生成一个从0到groups-1E-6的等差数列
+            # torch.linspace(0, groups - 1E-6, out_ch)生成一个从0到groups-1E-6的等差数列，即有groups个数值
+            # floor()函数向下取整，得到每个组的索引
             i = torch.linspace(0, groups - 1E-6, out_ch).floor()  # out_ch indices
+            # 计算每个输出通道的通道数，因为i输出的格式如下：
+            '''
+            tensor([0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+            0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 1., 1., 1., 1.,
+            1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.,
+            1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 2., 2., 2., 2., 2., 2., 2., 2.,
+            2., 2., 2., 2., 2., 2., 2., 2., 2., 2., 2., 2., 2., 2., 2., 2., 2., 2.,
+            2., 2., 2., 2., 2., 2., 3., 3., 3., 3., 3., 3., 3., 3., 3., 3., 3., 3.,
+            3., 3., 3., 3., 3., 3., 3., 3., 3., 3., 3., 3., 3., 3., 3., 3., 3., 3.,
+            3., 3.])
+
+            所以i==g实在判断上面的矩阵中每个元素是否等于当前组索引，等于为true，不等于为false
+            然后true=1，false=0，使用sum()函数将每组的true相加，得到每组的通道数
+            '''
             ch = [(i == g).sum() for g in range(groups)]
+            # [tensor(32), tensor(32), tensor(32), tensor(32)]
         else:  # 'equal_params': equal parameter count per group
+            # 按每个卷积核的参数量相等进行分组
+            # 这里就是在按照参数量（通道数 × 卷积核大小²）相等进行
+            # 计算，手算很简单，但是代码实现起来就比较复杂了 todo 了解其中的代数
             b = [out_ch] + [0] * groups
             a = np.eye(groups + 1, groups, k=-1)
             a -= np.roll(a, 1, axis=1)
@@ -144,6 +205,10 @@ class MixConv2d(nn.Module):  # MixConv: Mixed Depthwise Convolutional Kernels ht
             a[0] = 1
             ch = np.linalg.lstsq(a, b, rcond=None)[0].round().astype(int)  # solve for equal weight indices, ax = b
 
+        # 构建了多个卷积，后续使用时将它们的输出拼接在一起
+        # 每个卷积的输入通道、步长、dilation、偏置相同
+        # 每个卷积的输出通道数、卷积核大小不同、填充率也不同
+        # 这样就保证了每个卷积核输出的特征图大小相同，可以拼接在一起
         self.m = nn.ModuleList([nn.Conv2d(in_channels=in_ch,
                                           out_channels=ch[g],
                                           kernel_size=k[g],
@@ -209,20 +274,26 @@ class DeformConv2d(nn.Module):
         """
         Args:
             modulation (bool, optional): If True, Modulated Defomable Convolution (Deformable ConvNets v2).
+            是一种实现 可变形卷积（Deformable Convolution） 的模块。它通过学习卷积核的偏移量，使卷积操作能够动态调整采样位置，从而增强模型对几何变形的建模能力
         """
         super(DeformConv2d, self).__init__()
         self.kernel_size = kernel_size
         self.padding = padding
         self.stride = stride
         self.zero_padding = nn.ZeroPad2d(padding)
+        # 一个普通的卷积
         self.conv = nn.Conv2d(inc, outc, kernel_size=kernel_size, stride=kernel_size, bias=bias)
 
+        # 偏移量卷积 todo
+        # 输出通道数为 2 * kernel_size * kernel_size，表示每个卷积核位置的偏移量（x 和 y 坐标）。
         self.p_conv = nn.Conv2d(inc, 2*kernel_size*kernel_size, kernel_size=3, padding=1, stride=stride)
+        # 偏移量初始化为 0
         nn.init.constant_(self.p_conv.weight, 0)
         self.p_conv.register_backward_hook(self._set_lr)
 
         self.modulation = modulation
         if modulation:
+            # 调制机制（可选）
             self.m_conv = nn.Conv2d(inc, kernel_size*kernel_size, kernel_size=3, padding=1, stride=stride)
             nn.init.constant_(self.m_conv.weight, 0)
             self.m_conv.register_backward_hook(self._set_lr)

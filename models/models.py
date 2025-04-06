@@ -19,7 +19,7 @@ def create_modules(module_defs, img_size, cfg):
     _ = module_defs.pop(0)  # cfg training hyperparams (unused)
     output_filters = [3]  # input channels # 处理彩色图片，如果是黑白图片还要手动修改
     module_list = nn.ModuleList()
-    routs = []  # list of layers which rout to deeper layers
+    routs = []  # list of layers which rout to deeper layers 指向更深层的层的列表 用于残差链接
     yolo_index = -1
 
     # 遍历每一个模块的定义
@@ -56,10 +56,13 @@ def create_modules(module_defs, img_size, cfg):
                                                           bias=not bn))
 
             if bn:
+                # 如果使用了bn，则添加bn层
                 modules.add_module('BatchNorm2d', nn.BatchNorm2d(filters, momentum=0.03, eps=1E-4))
             else:
+                # 如果卷积没有使用bn层，则将其的层索引添加到routs中，用于后续的残差链接指定输出到某一层
                 routs.append(i)  # detection output (goes into yolo layer)
 
+            # 设置卷积的激活函数
             if mdef['activation'] == 'leaky':  # activation study https://github.com/ultralytics/yolov3/issues/441
                 modules.add_module('activation', nn.LeakyReLU(0.1, inplace=True))
             elif mdef['activation'] == 'swish':
@@ -74,6 +77,8 @@ def create_modules(module_defs, img_size, cfg):
                 modules.add_module('activation', nn.SiLU())
 
         elif mdef['type'] == 'deformableconvolutional':
+            # deformableconvolutional 是一种 可变形卷积（Deformable Convolution），其核心思想是通过学习卷积核的偏移量，使卷积操作能够适应目标的形状和大小，从而增强模型对几何变形的建模能力
+            # 对于可变形卷积，基本流程和普通卷积类似，就是普通卷积替换为了可变形卷积
             bn = mdef['batch_normalize']
             filters = mdef['filters']
             k = mdef['size']  # kernel size
@@ -115,22 +120,26 @@ def create_modules(module_defs, img_size, cfg):
             modules = GAP()
 
         elif mdef['type'] == 'silence':
+            # 占位符，方便后续替换为其他操作，不做任何事情
             filters = output_filters[-1]
             modules = Silence()
 
         elif mdef['type'] == 'scale_channels':  # nn.Sequential() placeholder for 'shortcut' layer
-            layers = mdef['from']
-            filters = output_filters[-1]
+            # todo 跳过，因为cfg中没有使用
+            layers = mdef['from'] 
+            filters = output_filters[-1] # 获取上一层的输出通道数
             routs.extend([i + l if l < 0 else l for l in layers])
             modules = ScaleChannel(layers=layers)
 
         elif mdef['type'] == 'sam':  # nn.Sequential() placeholder for 'shortcut' layer
+            # todo 跳过 因为cfg中没有使用
             layers = mdef['from']
             filters = output_filters[-1]
             routs.extend([i + l if l < 0 else l for l in layers])
             modules = ScaleSpatial(layers=layers)
 
         elif mdef['type'] == 'BatchNorm2d':
+            # 遇到单独的归一化层
             filters = output_filters[-1]
             modules = nn.BatchNorm2d(filters, momentum=0.03, eps=1E-4)
             if i == 0 and filters == 3:  # normalize RGB image
@@ -149,6 +158,7 @@ def create_modules(module_defs, img_size, cfg):
                 modules = maxpool
 
         elif mdef['type'] == 'local_avgpool':
+            # 为使用跳过，因为就是构建一个平均池化层
             k = mdef['size']  # kernel size
             stride = mdef['stride']
             avgpool = nn.AvgPool2d(kernel_size=k, stride=stride, padding=(k - 1) // 2)
@@ -159,31 +169,44 @@ def create_modules(module_defs, img_size, cfg):
                 modules = avgpool
 
         elif mdef['type'] == 'upsample':
+            # 构建上采样层
+            # def['stride']上采样时缩放的倍数
             if ONNX_EXPORT:  # explicitly state size, avoid scale_factor
-                g = (yolo_index + 1) * 2 / 32  # gain
+                # 在使用ONNX导出时，使用指定的大小，应该是ONNX结构不支持吧
+                # yolo_index yolo层的索引，也就是最近一次处理的yolo层
+                # 用于计算这个yolo层的输入大小
+                # 然后计算上采样的大小
+                # 由于通道的层数时固定的，所以每个yolo输入的大小都是固定的
+                # 即可通过输入的图片尺寸和yolo层的索引来计算
+                g = (yolo_index + 1) * 2 / 32  # gain 
                 modules = nn.Upsample(size=tuple(int(x * g) for x in img_size))  # img_size = (320, 192)
             else:
                 modules = nn.Upsample(scale_factor=mdef['stride'])
 
         elif mdef['type'] == 'route':  # nn.Sequential() placeholder for 'route' layer
-            layers = mdef['layers']
+            layers = mdef['layers'] # 是一个数字或者恶意个数字列表
+            # 获取指定层的输出通道数的总和
             filters = sum([output_filters[l + 1 if l > 0 else l] for l in layers])
+            # 将指定层的索引添加到routs中
             routs.extend([i + l if l < 0 else l for l in layers])
             modules = FeatureConcat(layers=layers)
 
         elif mdef['type'] == 'route2':  # nn.Sequential() placeholder for 'route' layer
+            # todo 跳过 因为cfg中没有使用
             layers = mdef['layers']
             filters = sum([output_filters[l + 1 if l > 0 else l] for l in layers])
             routs.extend([i + l if l < 0 else l for l in layers])
             modules = FeatureConcat2(layers=layers)
 
         elif mdef['type'] == 'route3':  # nn.Sequential() placeholder for 'route' layer
+            # todo 跳过 因为cfg中没有使用
             layers = mdef['layers']
             filters = sum([output_filters[l + 1 if l > 0 else l] for l in layers])
             routs.extend([i + l if l < 0 else l for l in layers])
             modules = FeatureConcat3(layers=layers)
 
         elif mdef['type'] == 'route_lhalf':  # nn.Sequential() placeholder for 'route' layer
+            # todo 跳过 因为cfg中没有使用
             layers = mdef['layers']
             filters = sum([output_filters[l + 1 if l > 0 else l] for l in layers])//2
             routs.extend([i + l if l < 0 else l for l in layers])
