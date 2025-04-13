@@ -213,24 +213,37 @@ def create_modules(module_defs, img_size, cfg):
             modules = FeatureConcat_l(layers=layers)
 
         elif mdef['type'] == 'shortcut':  # nn.Sequential() placeholder for 'shortcut' layer
-            layers = mdef['from']
-            filters = output_filters[-1]
+            # 短接
+            layers = mdef['from'] # 这个应该是要和那个层短接
+            filters = output_filters[-1] # 上一层的输出通道数
+            # i:表示当前层的索引
+            # i + l: 表示找到需要短接的层
+            # todo routs：这个的作用是什么
             routs.extend([i + l if l < 0 else l for l in layers])
+            # 看起来shortcut中应该还会有一个weights_type的属性
+            # 这个属性应该是每个层短接之间的权重把
             modules = WeightedFeatureFusion(layers=layers, weight='weights_type' in mdef)
 
         elif mdef['type'] == 'reorg3d':  # yolov3-spp-pan-scale
+            # 没有使用，这个应该是yolov3的层
             pass
 
         elif mdef['type'] == 'reorg':  # yolov3-spp-pan-scale
+            # todo 没有使用，但是这里应该就是yolov2中的增加感受野的操作
             filters = 4 * output_filters[-1]
             modules.add_module('Reorg', Reorg())
 
         elif mdef['type'] == 'yolo':
-            yolo_index += 1
-            stride = [8, 16, 32, 64, 128]  # P3, P4, P5, P6, P7 strides
+            # yolo层
+            yolo_index += 1 # todo 作用,应该是下一个yolov层的索引吧
+            stride = [8, 16, 32, 64, 128]  # P3, P4, P5, P6, P7 strides todo 作用
             if any(x in cfg for x in ['yolov4-tiny', 'fpn', 'yolov3']):  # P5, P4, P3 strides
-                stride = [32, 16, 8]
+                stride = [32, 16, 8] # 这里应该是针对轻量级检测，减少操作
+            # todo 这个操作有点像短接，不过看cfg中好像没有使用到，保存的是需要从哪些层短接吧
             layers = mdef['from'] if 'from' in mdef else []
+            # mdef['anchors'][mdef['mask']]：只拿到mask中指定索引的anchors
+            # mdef['classes']：分类检测数
+            # stride[yolo_index]：todo 只拿一个stride？
             modules = YOLOLayer(anchors=mdef['anchors'][mdef['mask']],  # anchor list
                                 nc=mdef['classes'],  # number of classes
                                 img_size=img_size,  # (416, 416)
@@ -297,40 +310,122 @@ def create_modules(module_defs, img_size, cfg):
 
 
 class YOLOLayer(nn.Module):
+    '''
+    yolo层
+    '''
     def __init__(self, anchors, nc, img_size, yolo_index, layers, stride):
+        '''
+        param anchors: 根据mask选择的anchors
+        param nc: 检测分类数
+        param img_size: 检测的输入图片尺寸
+        pram yolo_index: 表示当前 YOLO 层在网络中的索引
+        param layers: 短接层索引,存储需要从其他层获取输出的层索引
+        param stride: 当前yolo层下采样的倍数
+        '''
         super(YOLOLayer, self).__init__()
         self.anchors = torch.Tensor(anchors)
-        self.index = yolo_index  # index of this layer in layers
-        self.layers = layers  # model output layer indices
-        self.stride = stride  # layer stride
+        self.index = yolo_index  # 当前 YOLO 层在网络中的索引
+        self.layers = layers  #  短接层索引
+        self.stride = stride  # layer stride 表示当前 YOLO 层的下采样倍数
+        # 短接层的数量
         self.nl = len(layers)  # number of output layers (3)
+        # anchors 的数量
         self.na = len(anchors)  # number of anchors (3)
+        # 多少个分类
         self.nc = nc  # number of classes (80)
+        # 分类数+坐标+置信度
         self.no = nc + 5  # number of outputs (85)
+        # nx，ny: 当前yolo层的网格大小，ng是应该是(nx, ny)
         self.nx, self.ny, self.ng = 0, 0, 0  # initialize number of x, y gridpoints
+        # todo 缩放后的 anchors 为什么要缩放？难道原始的anchors指的是在原始大小中的尺寸？
         self.anchor_vec = self.anchors / self.stride
+        # anchors 的宽高张量
+        # anchors size: (1, anchor 数量, 1, 1, 2)
         self.anchor_wh = self.anchor_vec.view(1, self.na, 1, 1, 2)
 
         if ONNX_EXPORT:
+            # 这里应该是针对ONNX的导出支持做准备
             self.training = False
+            # img_size[1] // stride：直接得到当前层的输入尺寸
             self.create_grids((img_size[1] // stride, img_size[0] // stride))  # number x, y grid points
 
     def create_grids(self, ng=(13, 13), device='cpu'):
+        '''
+        param ng: 应该是当前yolo层的网格大小
+        它与输入图像的尺寸和下采样倍数有关： [ ng_w = \frac{\text{input width}}{\text{stride}}, \quad ng_h = \frac{\text{input height}}{\text{stride}} ] 其中，stride 是网络的下采样倍数（如 YOLOv4 中常见的 32、16、8 等）
+        '''
         self.nx, self.ny = ng  # x and y grid size
         self.ng = torch.tensor(ng, dtype=torch.float)
 
         # build xy offsets
         if not self.training:
+            # torch.arange(self.ny, device=device):生成一个从 0 到 self.ny-1 的一维张量，长度为 self.ny，表示网格在 y 方向的索引
+            # torch.arange(self.nx, device=device):生成一个从 0 到 self.nx-1 的一维张量，长度为 self.nx，表示网格在 x 方向的索引
+            # torch.meshgrid:用于生成二维网格坐标，输入两个一维张量 [torch.arange(self.ny), torch.arange(self.nx)]，返回两个二维张量
+            #  返回两个二维张量：
+            #   yv：每一行的值相同，表示网格的 y 坐标。
+            #   xv：每一列的值相同，表示网格的 x 坐标。        
+            '''
+            假设 self.ny = 3，self.nx = 4，则代码执行后：
+            yv = [[0, 0, 0, 0],
+                  [1, 1, 1, 1],
+                  [2, 2, 2, 2]]
+            
+            xv = [[0, 1, 2, 3],
+                  [0, 1, 2, 3],
+                  [0, 1, 2, 3]]
+
+            yv 表示网格中每个点的 y 坐标
+            xv 表示网格中每个点的 x 坐标
+
+            这段代码的作用是 生成网格坐标，用于目标检测任务中将预测框的偏移量加到网格坐标上，从而计算出预测框的实际位置
+            在 YOLO 中，输入图像被划分为网格，每个网格负责预测目标框。yv 和 xv 提供了网格的基础坐标，后续会结合预测的偏移量计算目标框的中心点坐标
+            '''
             yv, xv = torch.meshgrid([torch.arange(self.ny, device=device), torch.arange(self.nx, device=device)])
+            # torch.stack((xv, yv), 2)：将yv,xv的坐标组合起来，shape为[self.ny, self.nx, 2]，其中每个位置的最后一个维度存储了对应网格点的 (x, y) 坐标
+            # .view((1, 1, self.ny, self.nx, 2))：将堆叠后的张量重新调整形状，变为 [1, 1, self.ny, self.nx, 2]
+            '''
+            self.ny = 3，self.nx = 4。
+            xv 和 yv分别为：
+            xv = [[0, 1, 2, 3],
+                  [0, 1, 2, 3],
+                  [0, 1, 2, 3]]
+            
+            yv = [[0, 0, 0, 0],
+                  [1, 1, 1, 1],
+                  [2, 2, 2, 2]]
+            执行 torch.stack((xv, yv), 2) 后
+            grid = [[[0, 0], [1, 0], [2, 0], [3, 0]],
+                    [[0, 1], [1, 1], [2, 1], [3, 1]],
+                    [[0, 2], [1, 2], [2, 2], [3, 2]]]
+            执行 .view((1, 1, self.ny, self.nx, 2)) 后
+            grid = [[[[[0, 0], [1, 0], [2, 0], [3, 0]],
+                    [[0, 1], [1, 1], [2, 1], [3, 1]],
+                    [[0, 2], [1, 2], [2, 2], [3, 2]]]]]
+            '''
+            # 作用生成网格的基础坐标 (x, y)，用于再forward将预测框的偏移量加到网格坐标上，计算实际位置
             self.grid = torch.stack((xv, yv), 2).view((1, 1, self.ny, self.nx, 2)).float()
 
         if self.anchor_vec.device != device:
+            # todo 这边的作用
             self.anchor_vec = self.anchor_vec.to(device)
             self.anchor_wh = self.anchor_wh.to(device)
 
     def forward(self, p, out):
+        '''
+        param p: 当前层的输入特征图， shape：一般为 [batch_size, channels, grid_height, grid_width]。
+        形状：
+        一般为 [batch_size, channels, grid_height, grid_width]。
+        例如，对于一个输入图片大小为 416x416 的网络，假设当前 YOLO 层的下采样倍数为 32，则 grid_height = grid_width = 13。
+        channels 的值通常为 anchors × (classes + 5)，其中：
+        anchors 是当前 YOLO 层的 anchor 数量（通常为 3）。
+        classes 是目标检测的类别数量。
+        5 表示每个预测框的 4 个坐标值（x, y, w, h）和 1 个置信度
+        param out： 是一个列表，存储了网络中所有中间层的输出
+        '''
         ASFF = False  # https://arxiv.org/abs/1911.09516
         if ASFF:
+            # ASFF 是 Adaptive Spatial Feature Fusion 的缩写，中文翻译为自适应空间特征融合。它是一种用于目标检测的特征融合方法
             i, n = self.index, self.nl  # index in layers, number of layers
             p = out[self.layers[i]]
             bs, _, ny, nx = p.shape  # bs, 255, 13, 13
@@ -350,8 +445,11 @@ class YOLOLayer(nn.Module):
                          F.interpolate(out[self.layers[j]][:, :-n], size=[ny, nx], mode='bilinear', align_corners=False)
 
         elif ONNX_EXPORT:
+            # 如果用于到处，则batch_size只是1
             bs = 1  # batch size
         else:
+            # 如果不适用自适应特征融合，那么p的尺寸为
+            # batch_size, channels，输入特征图的尺寸， 输入特征图的尺寸
             bs, _, ny, nx = p.shape  # bs, 255, 13, 13
             if (self.nx, self.ny) != (nx, ny):
                 self.create_grids((nx, ny), p.device)
@@ -360,10 +458,14 @@ class YOLOLayer(nn.Module):
         p = p.view(bs, self.na, self.no, self.ny, self.nx).permute(0, 1, 3, 4, 2).contiguous()  # prediction
 
         if self.training:
+            # 如果处于训练模式，那么就直接返回了
             return p
 
         elif ONNX_EXPORT:
             # Avoid broadcasting for ANE operations
+            # na=anchors数量
+            # nx，ny=输入的特征图尺寸
+            # 如果处于到处模式
             m = self.na * self.nx * self.ny
             ng = 1. / self.ng.repeat(m, 1)
             grid = self.grid.repeat(1, self.na, 1, 1, 1).view(m, 2)
@@ -377,15 +479,20 @@ class YOLOLayer(nn.Module):
             return p_cls, xy * ng, wh
 
         else:  # inference
+            # 如果是推理模式，那么先加个p经过sigmoid计算压缩到0~1之间
             io = p.sigmoid()
+            # 将预测的坐标当前内部的坐标偏移值加上网格的坐标，得到实际的坐标位置
             io[..., :2] = (io[..., :2] * 2. - 0.5 + self.grid)
+            # todo
             io[..., 2:4] = (io[..., 2:4] * 2) ** 2 * self.anchor_wh
+            # todo
             io[..., :4] *= self.stride
             #io = p.clone()  # inference output
             #io[..., :2] = torch.sigmoid(io[..., :2]) + self.grid  # xy
             #io[..., 2:4] = torch.exp(io[..., 2:4]) * self.anchor_wh  # wh yolo method
             #io[..., :4] *= self.stride
             #torch.sigmoid_(io[..., 4:])
+            # 展平，使得size=（batch_size, -1, classes+xywh+1)
             return io.view(bs, -1, self.no), p  # view [1, 3, 13, 13, 85] as [1, 507, 85]
 
 

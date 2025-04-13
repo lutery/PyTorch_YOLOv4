@@ -15,7 +15,21 @@ except:
 
 
 class Reorg(nn.Module):
+    '''
+    主要作用是对特征图进行重组，它将输入特征图按照特定模式重排列，增加通道数并减小特征图的空间尺寸
+    作用
+    增加感受野：通过重组操作，可以让网络获得更大的感受野。todo 为什么这种可以增加感受野？都已经将所有的行列跳行拆分？难道是因为靠在一起的变化不大，要跳行组合，有点像跳帧
+    特征融合：有助于融合不同尺度的特征信息
+    信息密度提升：虽然空间分辨率降低，但通道数增加，保持了信息量
+    计算效率：降低特征图空间尺寸，减少后续层的计算量
+    '''
     def forward(self, x):
+        # x[..., ::2, ::2]：取偶数行偶数列
+        # x[..., 1::2, ::2]：取奇数行偶数列
+        # x[..., ::2, 1::2]：取偶数行奇数列
+        # x[..., 1::2, 1::2]：取奇数行奇数列
+        # 因为每个都只是取一半的行列，所以每个取出来的矩阵都变为原来的空间尺寸变为原来的1/2
+        # 再次将通道位cat，所以通道数变成原先的4倍
         return torch.cat([x[..., ::2, ::2], x[..., 1::2, ::2], x[..., ::2, 1::2], x[..., 1::2, 1::2]], 1)
 
 
@@ -173,28 +187,47 @@ class FeatureConcat_l(nn.Module):
 
 class WeightedFeatureFusion(nn.Module):  # weighted sum of 2 or more layers https://arxiv.org/abs/1911.09070
     def __init__(self, layers, weight=False):
+        '''
+        作用是对多个特征图进行加权融合。它通过对不同层的特征图进行加权求和，生成一个新的特征图，用于后续的网络计算。这种操作可以帮助模型更好地融合来自不同层的特征，提高模型的表达能力
+        param layers: 要被短接的层索引，比如-3
+        param weight: todo
+        '''
         super(WeightedFeatureFusion, self).__init__()
         self.layers = layers  # layer indices
         self.weight = weight  # apply weights boolean
         self.n = len(layers) + 1  # number of layers
         if weight:
+            # 如果配置了权重w参数，那么就增加w todo 作用
             self.w = nn.Parameter(torch.zeros(self.n), requires_grad=True)  # layer weights
 
     def forward(self, x, outputs):
         # Weights
         if self.weight:
+            # 归一化到 [0, 1]，并乘以一个缩放因子 (2 / n)，确保权重的总和适当分布
             w = torch.sigmoid(self.w) * (2 / self.n)  # sigmoid weights (0-1)
+            # 对输入的特征图加权
+            # w[0]表示输入x的特征权重
+            # 因为w有n+1个，所以w[1->n]就代表每一个短接的特征权重
             x = x * w[0]
 
         # Fusion
+        # 输入通道数
         nx = x.shape[1]  # input channels
+        # 遍历每一个的索引输出特征向量
+        # 这样就将每一个需要短接的层合并起来
         for i in range(self.n - 1):
+            # 如果有权重，那么就对每一个索引对应的层输出向量添加权重
+            # 如果没有权重，那么就无需加权直接输出
             a = outputs[self.layers[i]] * w[i + 1] if self.weight else outputs[self.layers[i]]  # feature to add
+            # 要短接的通道数
             na = a.shape[1]  # feature channels
 
             # Adjust channels
+            # 如果通道数相等则直接相加
             if nx == na:  # same shape
                 x = x + a
+            # 如果通道数不等则需要将层数较多的层抽取一部分层出来和少的通道数的层特征向量相加
+            # 当然也可以直接填充0
             elif nx > na:  # slice input
                 x[:, :na] = x[:, :na] + a  # or a = nn.ZeroPad2d((0, 0, 0, 0, 0, dc))(a); x = x + a
             else:  # slice feature
