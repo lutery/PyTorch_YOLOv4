@@ -353,6 +353,7 @@ class YOLOLayer(nn.Module):
         '''
         param ng: 应该是当前yolo层的网格大小
         它与输入图像的尺寸和下采样倍数有关： [ ng_w = \frac{\text{input width}}{\text{stride}}, \quad ng_h = \frac{\text{input height}}{\text{stride}} ] 其中，stride 是网络的下采样倍数（如 YOLOv4 中常见的 32、16、8 等）
+        它实在创建一个网格坐标，用于后续推理后将每个预测的偏移坐标转换为真实坐标
         '''
         self.nx, self.ny = ng  # x and y grid size
         self.ng = torch.tensor(ng, dtype=torch.float)
@@ -426,6 +427,7 @@ class YOLOLayer(nn.Module):
         ASFF = False  # https://arxiv.org/abs/1911.09516
         if ASFF:
             # ASFF 是 Adaptive Spatial Feature Fusion 的缩写，中文翻译为自适应空间特征融合。它是一种用于目标检测的特征融合方法
+            # todo还差这里的理解
             i, n = self.index, self.nl  # index in layers, number of layers
             p = out[self.layers[i]]
             bs, _, ny, nx = p.shape  # bs, 255, 13, 13
@@ -466,26 +468,61 @@ class YOLOLayer(nn.Module):
             # na=anchors数量
             # nx，ny=输入的特征图尺寸
             # 如果处于到处模式
-            m = self.na * self.nx * self.ny
+            m = self.na * self.nx * self.ny # 这里得到的应该是当前yolo层的预测框的数量，也就是anchors数*特征图的大小
+            # 可以看作：1. / self.ng： 将网格大小取倒数，用于归一化坐标
+            # 其扩展为 (m, 2) 的形状，以便与后续的坐标计算匹配
+            # shape 为 (m, 2) 的张量，表示每个网格的宽高，其中2是因为原先ng就是2（nx, ny)
             ng = 1. / self.ng.repeat(m, 1)
+            # self.grid 网格的基础坐标 (x, y)，形状为 (1, 1, ny, nx, 2)
+            # repeat(1, self.na, 1, 1, 1)表示在索引为1的维度上进行复制扩展，得到shape：1, na, ny, nx, 2)，以匹配 anchor 的数量
+            # .view(m, 2)将其展平为 (m, 2)，每个预测框对应一个网格坐标
+            # 这个用于将预测的坐标和框高转换为相对全图的比例
             grid = self.grid.repeat(1, self.na, 1, 1, 1).view(m, 2)
+            # self.anchor_wh：状为 (1, na, 1, 1, 2)
+            # .repeat(1, 1, self.nx, self.ny, 1)：在索引为2和3的维度上扩展nx和ny ，得到 (1, na, nx, ny, 2)，以匹配特征图的大小
+            # view(m, 2)：展平为 (m, 2)，每个预测框对应一个 anchor 的宽高
+            # * ng：将 anchor 的宽高归一化到网格尺度，即相对于全图的相对宽高
             anchor_wh = self.anchor_wh.repeat(1, 1, self.nx, self.ny, 1).view(m, 2) * ng
+            # 之所以要进行以上操作，应该是onnx不支持自动广播吧，所以需要手动广播到相同的shape才能进行计算
 
+            # 将输入的特征图p展平为 (m, 85)，其中85是每个预测框的参数数量
+            # 这里的参数包括：4个坐标值（x, y, w, h），1个置信度值和nc个分类值
             p = p.view(m, self.no)
+            # 得到预测的坐标值
             xy = torch.sigmoid(p[:, 0:2]) + grid  # x, y
+            # 得到预测的宽高值，这里的计算方式不同为了能够兼容onnx模式
+            # 为了得到真实的宽高值，那么久需要在onnx推理后进行额外的转换
+            # 在实际使用时torch模式和onnx模式在拿到推理结果的后的处理方式会不一致，这点要注意
+            # 因为两者的计算方式不同，但是不会造成影响，因为实际训练时，都是拿
+            # 中间结果进行计算的，即p
+            # 对于两者虽然计算方式不同，但是输入的p都是相同的，就决定了两者最终的预测框结果时一样
             wh = torch.exp(p[:, 2:4]) * anchor_wh  # width, height
+            # p[:, 4:5]：预测框的置信度/
+            # p[:, 5:self.no]：预测框的类别概率
+            # torch.sigmoid(p[:, 4:5])：将置信度压缩到 [0, 1] 范围。
+            # torch.sigmoid(p[:, 5:self.no])：将类别概率压缩到 [0, 1] 范围
+            # 如果有多个类别，返回 类别概率 × 置信度，如果只有一个类别，则返回 置信度
             p_cls = torch.sigmoid(p[:, 4:5]) if self.nc == 1 else \
                 torch.sigmoid(p[:, 5:self.no]) * torch.sigmoid(p[:, 4:5])  # conf
+            # 返回预测的置信度和类别概率, 将中心点坐标归一化到 [0, 1] 范围（对比全图的相对位置），预测框的宽高（基于特征图尺度的相对宽高）
             return p_cls, xy * ng, wh
 
         else:  # inference
             # 如果是推理模式，那么先加个p经过sigmoid计算压缩到0~1之间
+            # 这里所有的预测值都会做处理，貌似没有对预测框进行筛选匹配，可能在其他地方做了
             io = p.sigmoid()
             # 将预测的坐标当前内部的坐标偏移值加上网格的坐标，得到实际的坐标位置
             io[..., :2] = (io[..., :2] * 2. - 0.5 + self.grid)
-            # todo
+            # 在推理模式下，这里将预测的检测框尺寸进行转换，得到
+            # io[..., 2:4] * 2：将宽高值放大到 [0, 2] 的范围。这是 YOLOv4 中的一种设计，用于增强预测框的表达能力
+            # (io[..., 2:4] * 2) ** 2：对宽高值进行平方操作。这是为了确保预测框的宽高值始终为正，同时增加对小目标的敏感性（小值平方后变化更显著
+            # * self.anchor_wh：将预测框的宽高与对应的 anchor 宽高相乘，得到实际的宽高值。
+            # self.anchor_wh 是一个张量，存储了当前 YOLO 层的 anchor 宽高，已经根据特征图的下采样倍数进行了缩放。
+            # 通过以下计算得到实际的宽高值（还是需要结合下采样倍数进行还原，即乘以stride）
+            # todo 还是需要实际的调试感受
             io[..., 2:4] = (io[..., 2:4] * 2) ** 2 * self.anchor_wh
-            # todo
+            # 这一步是将预测框的坐标和宽高值进行缩放，得到实际的坐标和宽高值
+            # 这里的 stride 是当前 YOLO 层的下采样倍数
             io[..., :4] *= self.stride
             #io = p.clone()  # inference output
             #io[..., :2] = torch.sigmoid(io[..., :2]) + self.grid  # xy
