@@ -81,6 +81,7 @@ def time_synchronized():
 
 
 def is_parallel(model):
+    # 如果模型是并行的，返回True
     return type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)
 
 
@@ -221,15 +222,31 @@ class ModelEMA:
     A smoothed version of the weights is necessary for some training schemes to perform well.
     This class is sensitive where it is initialized in the sequence of model init,
     GPU assignment and distributed training wrappers.
+
+    是一个用于实现 指数移动平均（Exponential Moving Average, EMA） 的类。它的主要作用是对模型的参数（权重和缓冲区）进行平滑更新，从而生成一个更稳定的模型版本，通常用于提升模型的泛化能力和性能
+    EMA 是一种平滑技术，用于对模型的参数进行加权平均更新。相比于直接使用当前训练的模型参数，EMA 通过引入历史参数的加权平均，能够减少训练过程中参数的波动，生成一个更稳定的模型版本
+
+    有点像强化学习算法中的Target Network
+
+    训练过程中：
+    在每个训练步骤后调用 update 方法，更新 EMA 模型的参数。
+
+    验证和测试：
+    使用 EMA 模型进行验证和测试，通常可以获得更好的性能。
+
+    保存模型：
+    在训练结束时，将 EMA 模型保存为最终的模型版本。
     """
 
     def __init__(self, model, decay=0.9999, updates=0):
         # Create EMA
+        # 提取模型的参数，如果是并行模型，则提取module.module_list
         self.ema = deepcopy(model.module if is_parallel(model) else model).eval()  # FP32 EMA
         # if next(model.parameters()).device.type != 'cpu':
         #     self.ema.half()  # FP16 EMA
         self.updates = updates  # number of EMA updates
         self.decay = lambda x: decay * (1 - math.exp(-x / 2000))  # decay exponential ramp (to help early epochs)
+        # 将ema模型的参数设置为不需要梯度更新
         for p in self.ema.parameters():
             p.requires_grad_(False)
 
@@ -237,9 +254,11 @@ class ModelEMA:
         # Update EMA parameters
         with torch.no_grad():
             self.updates += 1
+            # 计算权重更新衰减系数
             d = self.decay(self.updates)
 
             msd = model.module.state_dict() if is_parallel(model) else model.state_dict()  # model state_dict
+            # 将model的参数更新到ema模型中
             for k, v in self.ema.state_dict().items():
                 if v.dtype.is_floating_point:
                     v *= d
@@ -247,4 +266,7 @@ class ModelEMA:
 
     def update_attr(self, model, include=(), exclude=('process_group', 'reducer')):
         # Update EMA attributes
+        # 将当前模型的某些属性（如 model.training）同步到 EMA 模型中。
+        # 遍历模型的属性，根据 include 和 exclude 的条件，将属性从当前模型复制到 EMA 模型
+        # todo 查看在哪里调用
         copy_attr(self.ema, model, include, exclude)

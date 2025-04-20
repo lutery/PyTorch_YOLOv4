@@ -232,18 +232,23 @@ YOLOv4 采用余弦退火学习率调度器，是为了让训练过程更平滑�
 
     # Image sizes
     gs = 64 #int(max(model.stride))  # grid size (max stride)
+    # 这边确认传入的imgsz是64的倍数，opt.img_size是一个list，包含训练和测试的image size
     imgsz, imgsz_test = [check_img_size(x, gs) for x in opt.img_size]  # verify imgsz are gs-multiples
 
-    # DP mode
+    # DP mode 是否进行多GPU训练
     if cuda and rank == -1 and torch.cuda.device_count() > 1:
         model = torch.nn.DataParallel(model)
 
     # SyncBatchNorm
+    # 将模型中的所有 BatchNorm 层（如 BatchNorm1d、BatchNorm2d 等）转换为 SyncBatchNorm 层
+    # 在分布式数据并行（DDP）训练中，每个 GPU 都会处理一部分数据（即一个 mini-batch）。普通的 BatchNorm 层只会在当前 GPU 的 mini-batch 上计算均值和方差，这可能导致不同 GPU 上的统计信息不一致，进而影响模型的收敛和性
     if opt.sync_bn and cuda and rank != -1:
+        # 仅适用于 DDP 模式，普通 DataParallel 模式下使用，可能会报错
+        # SyncBatchNorm 需要在每次前向传播时进行跨 GPU 的通信，这会增加一定的通信开销，可能稍微降低训练速度。
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(device)
         logger.info('Using SyncBatchNorm()')
 
-    # EMA
+    # EMA 创建一个EMA模型，用于后续的模型评估和保存
     ema = ModelEMA(model) if rank in [-1, 0] else None
 
     # DDP mode
