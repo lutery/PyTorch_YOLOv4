@@ -12,12 +12,14 @@ def create_modules(module_defs, img_size, cfg):
     param img_size: 输入图片的大小
     param cfg: cfg文件的路径 todo 为啥还要传入原始cfg
     大概因为是从yolov3 pytorch版本修改过来的，所以注释中有很多yolov3的注释
+
+    return 构建的层结构，哪些层没有被深层引用False/那些层要被深层引用True
     '''
     # Constructs module list of layer blocks from module configuration in module_defs
     
     img_size = [img_size] * 2 if isinstance(img_size, int) else img_size  # expand if necessary
     _ = module_defs.pop(0)  # cfg training hyperparams (unused)
-    output_filters = [3]  # input channels # 处理彩色图片，如果是黑白图片还要手动修改 值的事当前层的输入通道数
+    output_filters = [3]  # input channels # 处理彩色图片，如果是黑白图片还要手动修改 值是存储每一层的输出通道数，也是下一层的输入通道数的参考
     module_list = nn.ModuleList()
     routs = []  # list of layers which rout to deeper layers 指向更深层的层的列表 用于残差链接，todo 具体如何运作的
     yolo_index = -1
@@ -235,7 +237,7 @@ def create_modules(module_defs, img_size, cfg):
 
         elif mdef['type'] == 'yolo':
             # yolo层
-            yolo_index += 1 # todo 作用,应该是下一个yolov层的索引吧
+            yolo_index += 1 # todo 作用,应该是当前的yolo层的索引吧，因为最初的值是-1
             stride = [8, 16, 32, 64, 128]  # P3, P4, P5, P6, P7 strides todo 作用
             if any(x in cfg for x in ['yolov4-tiny', 'fpn', 'yolov3']):  # P5, P4, P3 strides
                 stride = [32, 16, 8] # 这里应该是针对轻量级检测，减少操作
@@ -253,8 +255,15 @@ def create_modules(module_defs, img_size, cfg):
 
             # Initialize preceding Conv2d() bias (https://arxiv.org/pdf/1708.02002.pdf section 3.3)
             try:
+                # 如果定义了from则从其他层拿到偏置，否则就从前一层拿到偏置
                 j = layers[yolo_index] if 'from' in mdef else -1
                 bias_ = module_list[j][0].bias  # shape(255,)
+                # 对前置偏置进行初始化处理，组合要目的在于
+                # 这种偏置初始化是基于 YOLOv3 论文 中的 Section 3.3 提出的方法。 todo 查看这个论文的部分
+                # 目的是为了：
+                # 改善模型在训练初期的稳定性
+                # 加快训练收敛速度
+                # 优化目标检测的置信度预测
                 bias = bias_[:modules.no * modules.na].view(modules.na, -1)  # shape(3,85)
                 #bias[:, 4] += -4.5  # obj
                 bias.data[:, 4] += math.log(8 / (640 / stride[yolo_index]) ** 2)  # obj (8 objects per 640 image)
@@ -272,6 +281,7 @@ def create_modules(module_defs, img_size, cfg):
                 print('WARNING: smart bias initialization failure.')
 
         elif mdef['type'] == 'jde':
+            # todo 暂时跳过，没有这个
             yolo_index += 1
             stride = [8, 16, 32, 64, 128]  # P3, P4, P5, P6, P7 strides
             if any(x in cfg for x in ['yolov4-tiny', 'fpn', 'yolov3']):  # P5, P4, P3 strides
@@ -300,9 +310,16 @@ def create_modules(module_defs, img_size, cfg):
             print('Warning: Unrecognized Layer Type: ' + mdef['type'])
 
         # Register module list and number of output filters
+        # 将构建完成的层添加到module_list中
         module_list.append(modules)
+        # 存储每一层的输出通道数
         output_filters.append(filters)
+        # todo 好像没有看到FPN PAN层？
 
+    # i: 总共有多少层
+    # routs_binary: 每一层都是False
+    # 如果层数归属于routs，则说明需要被深层引用，可能是残差连接
+    # 将被引用的层设置为True，记录再routs_binardy
     routs_binary = [False] * (i + 1)
     for i in routs:
         routs_binary[i] = True
@@ -603,8 +620,10 @@ class Darknet(nn.Module):
         # torch_utils.initialize_weights(self)
 
         # Darknet Header https://github.com/AlexeyAB/darknet/issues/2914#issuecomment-496675346
+        # todo version seen的作用未知
         self.version = np.array([0, 2, 5], dtype=np.int32)  # (int32) version info: major, minor, revision
         self.seen = np.array([0], dtype=np.int64)  # (int64) number of images seen during training
+        # 打印模型结构，每一层的参数量和计算量，todo 后续可以引入到我的代码中
         self.info(verbose) if not ONNX_EXPORT else None  # print model description
 
     def forward(self, x, augment=False, verbose=False):
@@ -714,6 +733,9 @@ class Darknet(nn.Module):
 
 
 def get_yolo_layers(model):
+    '''
+    获取yolo层的索引，识别方法是根据名字带有yolo关键字的识别
+    '''
     return [i for i, m in enumerate(model.module_list) if m.__class__.__name__ in ['YOLOLayer', 'JDELayer']]  # [89, 101, 113]
 
 

@@ -105,10 +105,26 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
         model = Darknet(opt.cfg).to(device) # create
 
     # Optimizer
-    nbs = 64  # nominal batch size
+    nbs = 64  # nominal batch size 立项状态的batch_size大小
+    #  total_batch_size：实际训练的批次大小，受限于显存大小
+    '''
+    这行代码的目的是：如果实际批量小于标称批量，则通过多步累积梯度，使得每次优化器更新的等效批量接近 nbs。
+    例如：实际 batch size=16，nbs=64，则 accumulate=4，表示每4个batch累积一次梯度再更新参数
+    '''
     accumulate = max(round(nbs / total_batch_size), 1)  # accumulate loss before optimizing
+    '''
+    权重衰减缩放（weight_decay）
+
+为了保证不同 batch size 下训练效果一致，需要按等效 batch size 对权重衰减（L2正则）进行缩放。
+这行代码根据实际 batch size 和累积步数调整 hyp['weight_decay']，使其与标称 batch size 下的效果一致。
+todo 了解数学原理
+    '''
     hyp['weight_decay'] *= total_batch_size * accumulate / nbs  # scale weight_decay
 
+    # todo 了解pg0 pg1 pg2的作用
+    # pg0存储的是非偏置、卷积、m\w的权重
+    # pg1存储卷积、线性层的权重
+    # pg2存储偏置的权重
     pg0, pg1, pg2 = [], [], []  # optimizer parameter groups
     for k, v in dict(model.named_parameters()).items():
         if '.bias' in k:
@@ -122,11 +138,19 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
         else:
             pg0.append(v)  # all else
 
+    # 选择合适的梯度优化器
+    # 这里进队pg0中的参数进行优化，其余的可能要按照accumulate进行手动参数优化
     if opt.adam:
         optimizer = optim.Adam(pg0, lr=hyp['lr0'], betas=(hyp['momentum'], 0.999))  # adjust beta1 to momentum
     else:
         optimizer = optim.SGD(pg0, lr=hyp['lr0'], momentum=hyp['momentum'], nesterov=True)
 
+    # add_param_group: 用于向已有的优化器中动态添加新的参数组
+    '''
+    作用
+    允许你为不同的参数组设置不同的超参数（如学习率、权重衰减等）。
+    常用于对模型的不同部分（如权重、偏置）采用不同的优化策略
+    '''
     optimizer.add_param_group({'params': pg1, 'weight_decay': hyp['weight_decay']})  # add pg1 with weight_decay
     optimizer.add_param_group({'params': pg2})  # add pg2 (biases)
     logger.info('Optimizer groups: %g .bias, %g conv.weight, %g other' % (len(pg2), len(pg1), len(pg0)))
@@ -134,11 +158,38 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
 
     # Scheduler https://arxiv.org/pdf/1812.01187.pdf
     # https://pytorch.org/docs/stable/_modules/torch/optim/lr_scheduler.html#OneCycleLR
+    # todo 了解这篇论文
+    '''
+    YOLOv4 采用如下方式的学习率调度器（cosine annealing）：
+### 原因与优势
+
+1. **平滑衰减，避免震荡**  
+   余弦退火（cosine annealing）让学习率从初始值平滑地下降到较低值，避免了阶梯式下降带来的训练震荡，有助于模型更稳定地收敛。
+
+2. **前期探索，后期收敛**  
+   前期保持较高学习率，有利于模型跳出局部最优、充分探索参数空间；后期逐步减小学习率，有助于模型在最优点附近精细收敛。
+
+3. **提升最终精度**  
+   余弦调度器能有效提升目标检测模型的最终精度，已被大量实验和论文验证（如 YOLOv4、YOLOv5、ResNet 等）。
+
+4. **无需手动调整**  
+   自动根据 epoch 变化调整学习率，减少了手动设置学习率衰减时机的麻烦。
+
+5. **兼容 warmup**  
+   余弦调度器常与 warmup（预热）结合，进一步提升训练初期的稳定性和收敛速度。
+
+### 总结
+
+YOLOv4 采用余弦退火学习率调度器，是为了让训练过程更平滑、收敛更稳定、最终精度更高，同时简化超参数调整。这是现代深度学习目标检测任务中非常主流且有效的做法。
+    '''
+    # 输入的x是当前是第几个epoch，返回的是当前epoch的学习率
+    # todo 绘制曲线
     lf = lambda x: ((1 + math.cos(x * math.pi / epochs)) / 2) * (1 - hyp['lrf']) + hyp['lrf']  # cosine
     scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
     # plot_lr_scheduler(optimizer, scheduler, epochs)
 
     # Logging
+    # 可视化配置
     if wandb and wandb.run is None:
         opt.hyp = hyp  # add hyperparameters
         wandb_run = wandb.init(config=opt, resume="allow",
@@ -150,6 +201,7 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
     start_epoch, best_fitness = 0, 0.0
     best_fitness_p, best_fitness_r, best_fitness_ap50, best_fitness_ap, best_fitness_f = 0.0, 0.0, 0.0, 0.0, 0.0
     if pretrained:
+        # 加载与训练模型以及超参数
         # Optimizer
         if ckpt['optimizer'] is not None:
             optimizer.load_state_dict(ckpt['optimizer'])
@@ -167,8 +219,10 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
 
         # Epochs
         start_epoch = ckpt['epoch'] + 1
+        # 如果是继续训练，则不能加载预训练模型
         if opt.resume:
             assert start_epoch > 0, '%s training to %g epochs is finished, nothing to resume.' % (weights, epochs)
+        # 这里表示预训练模型存在问题，需要重新调整训练总轮数
         if epochs < start_epoch:
             logger.info('%s has been trained for %g epochs. Fine-tuning for %g additional epochs.' %
                         (weights, ckpt['epoch'], epochs))
