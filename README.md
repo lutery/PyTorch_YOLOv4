@@ -248,3 +248,6 @@ steps=400000,450000
 训练命令：python .\train.py --device 1 --batch-size 2 --img 640 640 --data tk100.yaml --cfg cfg/yolov4-tk100.cfg --weights ' ' --name yolov4-tk100 --resume M:/Projects/openSource/python/yolo/PyTorch_YOLOv4/runs/train/yolov4-tk1005/weights/last.pt
 
 linux训练命令：python train.py --device 1 --batch-size 4 --img 640 640 --data tk100.yaml --cfg cfg/yolov4-tk100.cfg --weights ' ' --name yolov4-tk100 --resume /home/lutery/projects/python/PyTorch_YOLOv4/runs/train/yolov4-tk1005/weights/last.pt
+
+
+[3.1、yolov4实战先导_哔哩哔哩_bilibili](https://www.bilibili.com/video/BV1kzDEYdE3i?spm_id_from=333.788.player.switch&vd_source=4d2a71ad349005831356ddd323e9568b&p=28)
