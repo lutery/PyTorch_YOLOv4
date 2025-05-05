@@ -251,8 +251,14 @@ YOLOv4 采用余弦退火学习率调度器，是为了让训练过程更平滑�
     # EMA 创建一个EMA模型，用于后续的模型评估和保存
     ema = ModelEMA(model) if rank in [-1, 0] else None
 
-    # DDP mode
+    # DDP mode 是否开启DDP分布式训练模式
+    # DDP分布式训练：每个GPU具备完整的模型，每个GPU分配一部分数据进行训练，训练完成后通过通信机制将每个GPU的梯度进行平均更新模型参数
     if cuda and rank != -1:
+        # 这个模式是由pytorch提供的 
+        # 参数：  
+        # model：要并行化的模型
+        # device_ids：指定要使用的GPU设备ID列表
+        # output_device：指定输出设备ID
         model = DDP(model, device_ids=[opt.local_rank], output_device=opt.local_rank)
 
     # Trainloader

@@ -59,7 +59,25 @@ def exif_size(img):
 
 def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=False, cache=False, pad=0.0, rect=False,
                       rank=-1, world_size=1, workers=8):
+    '''
+    path: 数据集的路径
+    imgsz: 训练图片的大小，
+    stride: 步长? 传入的参数是64，应该是最大的下采样倍数吧
+    opt: 训练命令行参数
+    hyp: 训练的超参数
+    augment： todo
+    cache: 是否缓存数据集 todo
+    pad：todo
+    rect: todo
+    rank: todo
+    world_size: todo
+    workers: todo
+    '''
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
+    # 是一个上下文管理器（context manager），主要用于确保在分布式训练中，只有 rank 0 进程（主进程）先执行某些操作，其他进程需要等待 rank 0 完成后才能继续
+    # 防止多个进程同时处理数据集（如缓存图片、加载标签等）
+    # 确保只有主进程（rank=0）执行这些操作，其他进程等待并复用结果
+    # todo 如何复用？找到复用的证据
     with torch_distributed_zero_first(rank):
         dataset = LoadImagesAndLabels(path, imgsz, batch_size,
                                       augment=augment,  # augment images
@@ -355,6 +373,21 @@ class LoadStreams:  # multiple IP or RTSP cameras
 class LoadImagesAndLabels(Dataset):  # for training/testing
     def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
                  cache_images=False, single_cls=False, stride=32, pad=0.0, rank=-1):
+        '''
+        path: 数据集的路径，包含图片路径的文件或者文件夹列表
+        img_size: 训练图片的大小，
+        batch_size: 批次大小
+        augment: 是否增强数据
+        hyp: 训练的超参数
+        rect: 是否使用矩形训练 todo
+        image_weights: 是否使用图像权重 todo
+        cache_images: 是否缓存数据集 todo
+        single_cls: 是否单类训练 todo
+        stride: 步长? 传入的参数是64，应该是最大的下采样倍数吧
+        pad: todo
+        rank: todo
+        '''
+
         self.img_size = img_size
         self.augment = augment
         self.hyp = hyp
@@ -366,20 +399,25 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         def img2label_paths(img_paths):
             # Define label paths as a function of image paths
+            # yolov4的数据集路径是这样的：/images/xxx.jpg，/labels/xxx.txt （图片有一个images文件夹，标签有一个labels文件夹，两者在同一个父文件夹下）
+            # 并且图片和标签的文件名是一样的，只是后缀不同
             sa, sb = os.sep + 'images' + os.sep, os.sep + 'labels' + os.sep  # /images/, /labels/ substrings
             return [x.replace(sa, sb, 1).replace(x.split('.')[-1], 'txt') for x in img_paths]
 
+        # 解析传入的数据集路径，返回图片路径列表
         try:
             f = []  # image files
+            # 支持多个路径存储的数据集
+            # 支持直接指定文件夹或者文件
             for p in path if isinstance(path, list) else [path]:
                 p = Path(p)  # os-agnostic
-                if p.is_dir():  # dir
+                if p.is_dir():  # dir 如果是文件夹，则直接获取文件夹下的所有文件存储到f中
                     f += glob.glob(str(p / '**' / '*.*'), recursive=True)
-                elif p.is_file():  # file
+                elif p.is_file():  # file 这里的文件不是直接的图片，而是一个txt文件，txt文件存储这图片列表
                     with open(p, 'r') as t:
-                        t = t.read().splitlines()
-                        parent = str(p.parent) + os.sep
-                        f += [x.replace('./', parent) if x.startswith('./') else x for x in t]  # local to global path
+                        t = t.read().splitlines() #读区所有的图片
+                        parent = str(p.parent) + os.sep # 将文件的父目录作为路径前缀
+                        f += [x.replace('./', parent) if x.startswith('./') else x for x in t]  # local to global path 如果图片是相对路径则转换为以txt文件为父目录的绝对路径
                 else:
                     raise Exception('%s does not exist' % p)
             self.img_files = sorted([x.replace('/', os.sep) for x in f if x.split('.')[-1].lower() in img_formats])
@@ -387,7 +425,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         except Exception as e:
             raise Exception('Error loading data from %s: %s\nSee %s' % (path, e, help_url))
 
-        # Check cache
+        # Check cache 缓存解析的数据集数据
         self.label_files = img2label_paths(self.img_files)  # labels
         cache_path = str(Path(self.label_files[0]).parent) + '.cache3'  # cached labels
         if os.path.isfile(cache_path):
