@@ -385,10 +385,10 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         rect: 是否使用矩形训练 todo
         image_weights: 是否使用图像权重 todo
         cache_images: 是否缓存数据集 todo
-        single_cls: 是否单类训练 todo
+        single_cls: 是否单类训练，用来强制将数据集设置为同一个类别，不必担心数据集中的类别是否标错
         stride: 步长? 传入的参数是64，应该是最大的下采样倍数吧
         pad: todo
-        rank: todo
+        rank: 用来表示多进程训练下，当前的进程是否是主进程还是子进程
         '''
 
         self.img_size = img_size
@@ -521,32 +521,41 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         # Check labels
         create_datasubset, extract_bounding_boxes, labels_loaded = False, False, False
+        # nd：表示某个标签是否存在重复对象 todo 为啥
+        # 检查标签重复：避免同一个目标被重复标注
+        # 验证数据一致性：确保数据形状统一
+        # 数据预处理：去除重复数据，保证数据质量
+        # nf: 应该是标记有多少个有效的标签 但是貌似+=1前都没有contiue操作吧？感觉一定会加1，干嘛不直接len(self.labels)呢
+        # ns：子集的数据量
         nm, nf, ne, ns, nd = 0, 0, 0, 0, 0  # number missing, found, empty, datasubset, duplicate
         pbar = enumerate(self.label_files)
-        if rank in [-1, 0]:
+        if rank in [-1, 0]: # 限制只有主进程打印
             pbar = tqdm(pbar)
-        for i, file in pbar:
+        for i, file in pbar: # 遍历标签文件
             l = self.labels[i]  # label
             if l is not None and l.shape[0]:
-                assert l.shape[1] == 5, '> 5 label columns: %s' % file
-                assert (l >= 0).all(), 'negative labels: %s' % file
-                assert (l[:, 1:] <= 1).all(), 'non-normalized or out of bounds coordinate labels: %s' % file
-                if np.unique(l, axis=0).shape[0] < l.shape[0]:  # duplicate rows
+                assert l.shape[1] == 5, '> 5 label columns: %s' % file # 目标label的列数必须是5
+                assert (l >= 0).all(), 'negative labels: %s' % file # 标签的值必须是正数
+                assert (l[:, 1:] <= 1).all(), 'non-normalized or out of bounds coordinate labels: %s' % file # 标签的坐标值必须在0-1之间
+                if np.unique(l, axis=0).shape[0] < l.shape[0]:  # duplicate rows 判断是否存在重复的标签对象
                     nd += 1  # print('WARNING: duplicate rows in %s' % self.label_files[i])  # duplicate rows
                 if single_cls:
                     l[:, 0] = 0  # force dataset into single-class mode
                 self.labels[i] = l
                 nf += 1  # file found
 
-                # Create subdataset (a smaller dataset)
+                # Create subdataset (a smaller dataset)  默认是False，不创建子集，也不会被参数配置
+                # # 如果需要创建子数据集且当前子集大小小于10000
+                # 子集主要用于快速验证，快速了解模型的性能
                 if create_datasubset and ns < 1E4:
-                    if ns == 0:
+                    if ns == 0: # 初始化时创建子集对应的目录
                         create_folder(path='./datasubset')
                         os.makedirs('./datasubset/images')
-                    exclude_classes = 43
+                    exclude_classes = 43 # 排除掉的类别 43，只有不包含该类别的数据才会被添加到数据集的子集中
                     if exclude_classes not in l[:, 0]:
-                        ns += 1
+                        ns += 1 # 子集数据集数量加1
                         # shutil.copy(src=self.img_files[i], dst='./datasubset/images/')  # copy image
+                        # 记录子集数据集的图片路径
                         with open('./datasubset/images.txt', 'a') as f:
                             f.write(self.img_files[i] + '\n')
 
