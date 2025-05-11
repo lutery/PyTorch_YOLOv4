@@ -31,7 +31,8 @@ help_url = 'https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data'
 img_formats = ['bmp', 'jpg', 'jpeg', 'png', 'tif', 'tiff', 'dng']  # acceptable image suffixes
 vid_formats = ['mov', 'avi', 'mp4', 'mpg', 'mpeg', 'm4v', 'wmv', 'mkv']  # acceptable video suffixes
 
-# Get orientation exif tag
+# Get orientation exif tag 这边在获取exif的orientation值，0x0112
+# 有可能为了方便维护，0x0112有可能会改变，所以这里要遍历获取
 for orientation in ExifTags.TAGS.keys():
     if ExifTags.TAGS[orientation] == 'Orientation':
         break
@@ -46,6 +47,8 @@ def exif_size(img):
     # Returns exif-corrected PIL size
     s = img.size  # (width, height)
     try:
+        # 获取图片的exif信息中的orientation值
+        # 根据图像的方向获取图片的宽高，难道有些图片虽然返回的宽高是640x480，但是实际的宽高是480x640？
         rotation = dict(img._getexif().items())[orientation]
         if rotation == 6:  # rotation 270
             s = (s[1], s[0])
@@ -409,6 +412,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             f = []  # image files
             # 支持多个路径存储的数据集
             # 支持直接指定文件夹或者文件
+            # 这里指定的路径都必须是图片，label会自动从图片中生成
             for p in path if isinstance(path, list) else [path]:
                 p = Path(p)  # os-agnostic
                 if p.is_dir():  # dir 如果是文件夹，则直接获取文件夹下的所有文件存储到f中
@@ -430,6 +434,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         cache_path = str(Path(self.label_files[0]).parent) + '.cache3'  # cached labels
         if os.path.isfile(cache_path):
             cache = torch.load(cache_path)  # load
+            # 简单的通过获取文件的size作为hash 判断数据集是否发生了变化
             if cache['hash'] != get_hash(self.label_files + self.img_files):  # dataset changed
                 cache = self.cache_labels(cache_path)  # re-cache
         else:
@@ -438,23 +443,26 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         # Read cache
         cache.pop('hash')  # remove hash
         labels, shapes = zip(*cache.values())
-        self.labels = list(labels)
-        self.shapes = np.array(shapes, dtype=np.float64)
-        self.img_files = list(cache.keys())  # update
-        self.label_files = img2label_paths(cache.keys())  # update
+        self.labels = list(labels) # 目标label列表
+        self.shapes = np.array(shapes, dtype=np.float64) # 所有图片对应的shape， shape = （图片数量，2（图片shape））
+        self.img_files = list(cache.keys())  # update # 图片路径列表
+        self.label_files = img2label_paths(cache.keys())  # update label文件路径列表
 
         n = len(shapes)  # number of images
-        bi = np.floor(np.arange(n) / batch_size).astype(np.int)  # batch index
-        nb = bi[-1] + 1  # number of batches
-        self.batch = bi  # batch index of image
-        self.n = n
+        bi = np.floor(np.arange(n) / batch_size).astype(np.int)  # batch index of image todo 虽然知道这里计算出来，每个相同batch的图片index是相同的，类似：[0. 0. 1. 1. 2. 2. 3. 3. 4. 4. 5.]
+        nb = bi[-1] + 1  # number of batches 有多少个batch
+        self.batch = bi  # batch index of image todo
+        self.n = n # 训练图片的数量
 
-        # Rectangular Training
-        if self.rect:
+        # Rectangular Training todo
+        # 据说只是提高训练的效率，和准确率关系不大
+        # 将相似批次的图片放在一起，统一处理，提高内存效率，计算效率，有点像c++内存对其的感觉
+        if self.rect: 
             # Sort by aspect ratio
             s = self.shapes  # wh
-            ar = s[:, 1] / s[:, 0]  # aspect ratio
-            irect = ar.argsort()
+            ar = s[:, 1] / s[:, 0]  # aspect ratio 获取所有图片的高宽比
+            irect = ar.argsort() # 按照高宽比排序，但是保持原来的索引
+            # 根据高宽比重新排序
             self.img_files = [self.img_files[i] for i in irect]
             self.label_files = [self.label_files[i] for i in irect]
             self.labels = [self.labels[i] for i in irect]
@@ -462,15 +470,53 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             ar = ar[irect]
 
             # Set training image shapes
+            # 这边是存储每个批次的shape中最能覆盖该批次中所有图片的比率
+            # 按照下面这么计算的话，每次都只保留一个batch中最接近1:1的比率作为整个图片的比率
             shapes = [[1, 1]] * nb
             for i in range(nb):
                 ari = ar[bi == i]
                 mini, maxi = ari.min(), ari.max()
                 if maxi < 1:
+                    # 表示横向图，高为1
                     shapes[i] = [maxi, 1]
                 elif mini > 1:
+                    # 表示纵向图，宽为1
                     shapes[i] = [1, 1 / mini]
 
+            '''
+            # 1. shapes 转换为数组并乘以 img_size
+            np.array(shapes) * img_size  # shapes 包含了每个批次的最佳宽高比
+            
+            # 2. 除以 stride 并加上 pad
+            (...) / stride + pad  # 将尺寸调整为 stride 的倍数
+            
+            # 3. 向上取整
+            np.ceil(...)  # 确保尺寸不会小于需要的大小
+            
+            # 4. 转换为整数
+            (...).astype(np.int)  
+            
+            # 5. 最后乘以 stride
+            (...) * stride  # 得到最终的尺寸，确保是 stride 的倍数
+
+            确保每个批次的图片尺寸是 stride（通常是 32）的倍数
+            基于每个批次中图片的宽高比计算最优的尺寸
+            最小化填充（padding）的数量，提高内存和计算效率
+
+            # 假设：
+            img_size = 640
+            stride = 32
+            pad = 0.0
+            shapes = [[1, 1], [0.8, 1]]  # 两个批次的最佳宽高比
+            
+            # 计算过程：
+            # shapes[0] * 640 = [640, 640]
+            # shapes[1] * 640 = [512, 640]
+            # 向上取整到 stride 的倍数
+            # batch_shapes[0] = [640, 640]  # 已经是 32 的倍数
+            # batch_shapes[1] = [512, 640]  # 512 已经是 32 的倍数
+            '''
+            # todo 后续如何使用batch_shapes
             self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(np.int) * stride
 
         # Check labels
@@ -548,17 +594,18 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
     def cache_labels(self, path='labels.cache3'):
         # Cache dataset labels, check images and read shapes
-        x = {}  # dict
+        x = {}  # dict 以图片路径为键，存储目标label列表、和图片shape
         pbar = tqdm(zip(self.img_files, self.label_files), desc='Scanning images', total=len(self.img_files))
         for (img, label) in pbar:
             try:
                 l = []
                 im = Image.open(img)
-                im.verify()  # PIL verify
-                shape = exif_size(im)  # image size
+                im.verify()  # PIL verify 图片数据合法性验证
+                shape = exif_size(im)  # image size 通过exif准确获取图片的宽、高，可能是因为有些图片的宽高是640x480，但是实际的宽高是480x640
                 assert (shape[0] > 9) & (shape[1] > 9), 'image size <10 pixels'
                 if os.path.isfile(label):
                     with open(label, 'r') as f:
+                        # label 按行存储一个一个目标
                         l = np.array([x.split() for x in f.read().splitlines()], dtype=np.float32)  # labels
                 if len(l) == 0:
                     l = np.zeros((0, 5), dtype=np.float32)
@@ -566,6 +613,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             except Exception as e:
                 print('WARNING: Ignoring corrupted image and/or label %s: %s' % (img, e))
 
+        # 计算hash值并存储将训练数据集缓存起来
         x['hash'] = get_hash(self.label_files + self.img_files)
         torch.save(x, path)  # save for next time
         return x
