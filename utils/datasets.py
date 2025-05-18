@@ -73,8 +73,8 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
     pad：todo
     rect: todo
     rank: todo
-    world_size: todo
-    workers: todo
+    world_size: 参与训练的gpu数量
+    workers: 数据加载的线程数
     '''
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
     # 是一个上下文管理器（context manager），主要用于确保在分布式训练中，只有 rank 0 进程（主进程）先执行某些操作，其他进程需要等待 rank 0 完成后才能继续
@@ -92,7 +92,11 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                                       pad=pad,
                                       rank=rank)
 
+    # 这里是考虑到batch_size大于数据集的大小
     batch_size = min(batch_size, len(dataset))
+    # 计算有多少个训练线程
+    # 如果batch_size都小于0，那么不需要加载数据集
+    # os.cpu_count() // world_size：保证每个gpu都能分配到合适的cpu线程数
     nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
     sampler = torch.utils.data.distributed.DistributedSampler(dataset) if rank != -1 else None
     dataloader = InfiniteDataLoader(dataset,
@@ -527,6 +531,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         # 数据预处理：去除重复数据，保证数据质量
         # nf: 应该是标记有多少个有效的标签 但是貌似+=1前都没有contiue操作吧？感觉一定会加1，干嘛不直接len(self.labels)呢
         # ns：子集的数据量
+        # ne: 表示没有标签的图片数量
         nm, nf, ne, ns, nd = 0, 0, 0, 0, 0  # number missing, found, empty, datasubset, duplicate
         pbar = enumerate(self.label_files)
         if rank in [-1, 0]: # 限制只有主进程打印
@@ -560,6 +565,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                             f.write(self.img_files[i] + '\n')
 
                 # Extract object detection boxes for a second stage classifier
+                # todo 查明后续如何使用这里将目标框提取出来的图片
                 if extract_bounding_boxes:
                     p = Path(self.img_files[i])
                     img = cv2.imread(str(p))
@@ -578,27 +584,32 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                         b[[1, 3]] = np.clip(b[[1, 3]], 0, h)
                         assert cv2.imwrite(f, img[b[1]:b[3], b[0]:b[2]]), 'Failure extracting classifier boxes'
             else:
+                # 这里的l是None，表示没有标签，感觉应该是负样本吧
                 ne += 1  # print('empty labels for image %s' % self.img_files[i])  # file empty
                 # os.system("rm '%s' '%s'" % (self.img_files[i], self.label_files[i]))  # remove
 
+            # 只有主线程才更新打印日志
             if rank in [-1, 0]:
                 pbar.desc = 'Scanning labels %s (%g found, %g missing, %g empty, %g duplicate, for %g images)' % (
                     cache_path, nf, nm, ne, nd, n)
         if nf == 0:
+            # 如果没有找到任何标签，说明数据集不合法
             s = 'WARNING: No labels found in %s. See %s' % (os.path.dirname(file) + os.sep, help_url)
             print(s)
             assert not augment, '%s. Can not train without labels.' % s
 
         # Cache images into memory for faster training (WARNING: large datasets may exceed system RAM)
+        # 这里是缓存图片到内存中，提升训练速度
         self.imgs = [None] * n
         if cache_images:
             gb = 0  # Gigabytes of cached images
             self.img_hw0, self.img_hw = [None] * n, [None] * n
+            # 这里self是直接作为参数传入到load_image函数中
             results = ThreadPool(8).imap(lambda x: load_image(*x), zip(repeat(self), range(n)))  # 8 threads
             pbar = tqdm(enumerate(results), total=n)
             for i, x in pbar:
                 self.imgs[i], self.img_hw0[i], self.img_hw[i] = x  # img, hw_original, hw_resized = load_image(self, i)
-                gb += self.imgs[i].nbytes
+                gb += self.imgs[i].nbytes # 图片的字节数
                 pbar.desc = 'Caching images (%.1fGB)' % (gb / 1E9)
 
     def cache_labels(self, path='labels.cache3'):
@@ -1016,6 +1027,7 @@ class LoadImagesAndLabels9(Dataset):  # for training/testing
 # Ancillary functions --------------------------------------------------------------------------------------------------
 def load_image(self, index):
     # loads 1 image from dataset, returns img, original hw, resized hw
+    # 加载图片（调整大小后的图片），返回图片，原始宽高，调整后的宽高
     img = self.imgs[index]
     if img is None:  # not cached
         path = self.img_files[index]
