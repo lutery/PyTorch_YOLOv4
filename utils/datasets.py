@@ -398,10 +398,10 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.img_size = img_size
         self.augment = augment
         self.hyp = hyp
-        self.image_weights = image_weights
+        self.image_weights = image_weights # 基于图像的权重进行图片训练的采样，可能可以提高某些图片的训练比例
         self.rect = False if image_weights else rect
         self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)
-        self.mosaic_border = [-img_size // 2, -img_size // 2]
+        self.mosaic_border = [-img_size // 2, -img_size // 2] # 有点想图片的中心，但是为啥是负数 todo
         self.stride = stride
 
         def img2label_paths(img_paths):
@@ -649,18 +649,23 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
     def __getitem__(self, index):
         if self.image_weights:
+            # todo 找到self.indices在哪里定义
+            # 这里应该是依据图像权重重采样，
             index = self.indices[index]
 
         hyp = self.hyp
+        # 超参数，是否开始马赛克图像增强
         mosaic = self.mosaic and random.random() < hyp['mosaic']
         if mosaic:
             # Load mosaic
             img, labels = load_mosaic(self, index)
+            # todo load_mosaic和load_mosaic9的区别
             #img, labels = load_mosaic9(self, index)
             shapes = None
 
             # MixUp https://arxiv.org/pdf/1710.09412.pdf
             if random.random() < hyp['mixup']:
+                # 这个就是将两张图片通过透明通道叠加起来，然后将目标也叠加起来的图像增强方式
                 img2, labels2 = load_mosaic(self, random.randint(0, len(self.labels) - 1))
                 #img2, labels2 = load_mosaic9(self, random.randint(0, len(self.labels) - 1))
                 r = np.random.beta(8.0, 8.0)  # mixup ratio, alpha=beta=8.0
@@ -672,9 +677,11 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             img, (h0, w0), (h, w) = load_image(self, index)
 
             # Letterbox
+            # self.rect：如果设置了这个，那么图片已经按照相似矩阵重新进行了排列，详细大小的图片都缩放到最近等于32倍数的矩阵大小
             shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
             img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
             shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
+            # shapes： （原始图片尺寸），（（长宽到目标尺寸的缩放比例）， 边界缩放到32的倍数需要填充的大小）
 
             # Load labels
             labels = []
@@ -1026,16 +1033,18 @@ class LoadImagesAndLabels9(Dataset):  # for training/testing
 
 # Ancillary functions --------------------------------------------------------------------------------------------------
 def load_image(self, index):
+    # return 图片（缩放后的图片，最长的边等于img_size），图片的原始高宽，缩放后的尺寸
     # loads 1 image from dataset, returns img, original hw, resized hw
     # 加载图片（调整大小后的图片），返回图片，原始宽高，调整后的宽高
-    img = self.imgs[index]
+    img = self.imgs[index] # 这里存储的是缓存的图片数据（已经被调整了大小）
     if img is None:  # not cached
         path = self.img_files[index]
         img = cv2.imread(path)  # BGR
         assert img is not None, 'Image Not Found ' + path
         h0, w0 = img.shape[:2]  # orig hw
-        r = self.img_size / max(h0, w0)  # resize image to img_size
+        r = self.img_size / max(h0, w0)  # resize image to img_size 将最大的边进行缩放
         if r != 1:  # always resize down, only resize up if training with augmentation
+            # 根据不同的缩放方向选择不同的缩放方法
             interp = cv2.INTER_AREA if r < 1 and not self.augment else cv2.INTER_LINEAR
             img = cv2.resize(img, (int(w0 * r), int(h0 * r)), interpolation=interp)
         return img, (h0, w0), img.shape[:2]  # img, hw_original, hw_resized
@@ -1067,17 +1076,21 @@ def load_mosaic(self, index):
 
     labels4 = []
     s = self.img_size
+    # 随机马赛克增强的图片中心
     yc, xc = [int(random.uniform(-x, 2 * s + x)) for x in self.mosaic_border]  # mosaic center x, y
+    # 虽则选择马赛克增强时的其他几个图片
     indices = [index] + [random.randint(0, len(self.labels) - 1) for _ in range(3)]  # 3 additional image indices
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
 
         # place img in img4
+        # 将不同索引的图片放在马赛克图像的不同位置
         if i == 0:  # top left
+            # 这里的图像大小是img_size的两倍
             img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
-            x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
-            x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
+            x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image) 目标图片的位置
+            x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image) 原始图中的提取的位置
         elif i == 1:  # top right
             x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, s * 2), yc
             x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
@@ -1089,13 +1102,17 @@ def load_mosaic(self, index):
             x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
 
         img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
+        # 因为时随机放置，所以会存在有的图片拷贝大马赛克图片中的缺失部分边界
+        # 有的图片拷贝到马赛克图片中一边还有空余的位置
         padw = x1a - x1b
         padh = y1a - y1b
 
         # Labels
-        x = self.labels[index]
+        # 提取出当前索引的目标标签
+        x = self.labels[index] 
         labels = x.copy()
-        if x.size > 0:  # Normalized xywh to pixel xyxy format
+        if x.size > 0:  # Normalized xywh to pixel xyxy format 注意xywh中的xy时中心点坐标
+            # 这里转换后的坐标是马赛克图像中的坐标，形式是实际坐标值，而不是百分比的形式了
             labels[:, 1] = w * (x[:, 1] - x[:, 3] / 2) + padw
             labels[:, 2] = h * (x[:, 2] - x[:, 4] / 2) + padh
             labels[:, 3] = w * (x[:, 1] + x[:, 3] / 2) + padw
@@ -1105,10 +1122,12 @@ def load_mosaic(self, index):
     # Concat/clip labels
     if len(labels4):
         labels4 = np.concatenate(labels4, 0)
+        # 这里是限制所有坐标不能超过图像的区域
         np.clip(labels4[:, 1:], 0, 2 * s, out=labels4[:, 1:])  # use with random_perspective
         # img4, labels4 = replicate(img4, labels4)  # replicate
 
     # Augment
+    # 对马赛克图片进行图片增强
     img4, labels4 = random_perspective(img4, labels4,
                                        degrees=self.hyp['degrees'],
                                        translate=self.hyp['translate'],
@@ -1212,39 +1231,46 @@ def replicate(img, labels):
 
 
 def letterbox(img, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True, auto_size=32):
+    # reutrn：返回缩放为new_shape的图片(但如果auto=true,那么返回的图片只有一边=new_shape，另一边是auto_size的倍数，可能后续会填充缩放)，ratio：图片缩放到目标尺寸时长宽分别的缩放比例，填充的边界值
     # Resize image to a 32-pixel-multiple rectangle https://github.com/ultralytics/yolov3/issues/232
-    shape = img.shape[:2]  # current shape [height, width]
+    shape = img.shape[:2]  # current shape [height, width] 图片的原始宽高
     if isinstance(new_shape, int):
-        new_shape = (new_shape, new_shape)
+        new_shape = (new_shape, new_shape) # 目标高宽
 
-    # Scale ratio (new / old)
+    # Scale ratio (new / old) 选择最小的缩放比例，防止缩放过大
     r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
     if not scaleup:  # only scale down, do not scale up (for better test mAP)
-        r = min(r, 1.0)
+        r = min(r, 1.0) # 仅缩小，不放大
 
     # Compute padding
     ratio = r, r  # width, height ratios
-    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
-    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
+    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r)) # 缩放后的图片尺寸
+    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding # 缩放后与目标尺寸的差值
     if auto:  # minimum rectangle
-        dw, dh = np.mod(dw, auto_size), np.mod(dh, auto_size)  # wh padding
+        dw, dh = np.mod(dw, auto_size), np.mod(dh, auto_size)  # wh padding 差值对其32的倍数，保持原图比例进行填充，因为目标尺寸时640 为32的倍数，所以这里填充后的大小一定也是640，取膜就是为了获取到目标尺寸的不等比的部分
     elif scaleFill:  # stretch
-        dw, dh = 0.0, 0.0
+        dw, dh = 0.0, 0.0 # 如果是不保持比例的缩放那么就不需要填充
         new_unpad = (new_shape[1], new_shape[0])
-        ratio = new_shape[1] / shape[1], new_shape[0] / shape[0]  # width, height ratios
+        ratio = new_shape[1] / shape[1], new_shape[0] / shape[0]  # width, height ratios # 强制图片缩放到目标的大小
 
     dw /= 2  # divide padding into 2 sides
     dh /= 2
 
     if shape[::-1] != new_unpad:  # resize
-        img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
+        img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR) # 将图片缩放到目标尺寸，此时保持比例
     top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
     left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-    img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
+    img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border 对图像的边缘进行填充
     return img, ratio, (dw, dh)
 
 
 def random_perspective(img, targets=(), degrees=10, translate=.1, scale=.1, shear=10, perspective=0.0, border=(0, 0)):
+    '''
+    img: 图片
+    targets: 目标标签labels
+
+    返回图像增强后的图片
+    '''
     # torchvision.transforms.RandomAffine(degrees=(-10, 10), translate=(.1, .1), scale=(.9, 1.1), shear=(-10, 10))
     # targets = [cls, xyxy]
 
@@ -1252,35 +1278,37 @@ def random_perspective(img, targets=(), degrees=10, translate=.1, scale=.1, shea
     width = img.shape[1] + border[1] * 2
 
     # Center
-    C = np.eye(3)
-    C[0, 2] = -img.shape[1] / 2  # x translation (pixels)
+    C = np.eye(3) # 这里是创建了一个3x3的单位矩阵
+    # 在图像变化中，将转换的中心点移动到图像的原点处
+    C[0, 2] = -img.shape[1] / 2  # x translation (pixels) 
     C[1, 2] = -img.shape[0] / 2  # y translation (pixels)
 
     # Perspective
-    P = np.eye(3)
+    P = np.eye(3) # 创建透视变化矩阵
     P[2, 0] = random.uniform(-perspective, perspective)  # x perspective (about y)
     P[2, 1] = random.uniform(-perspective, perspective)  # y perspective (about x)
 
     # Rotation and Scale
-    R = np.eye(3)
+    # 创建随机旋转和缩放矩阵
+    R = np.eye(3) 
     a = random.uniform(-degrees, degrees)
     # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
     s = random.uniform(1 - scale, 1 + scale)
     # s = 2 ** random.uniform(-scale, scale)
     R[:2] = cv2.getRotationMatrix2D(angle=a, center=(0, 0), scale=s)
 
-    # Shear
+    # Shear 错切变化矩阵
     S = np.eye(3)
     S[0, 1] = math.tan(random.uniform(-shear, shear) * math.pi / 180)  # x shear (deg)
     S[1, 0] = math.tan(random.uniform(-shear, shear) * math.pi / 180)  # y shear (deg)
 
     # Translation
-    T = np.eye(3)
+    T = np.eye(3) # 平移变化
     T[0, 2] = random.uniform(0.5 - translate, 0.5 + translate) * width  # x translation (pixels)
     T[1, 2] = random.uniform(0.5 - translate, 0.5 + translate) * height  # y translation (pixels)
 
     # Combined rotation matrix
-    M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT
+    M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT 将变化矩阵组合起来
     if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
         if perspective:
             img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(114, 114, 114))
@@ -1294,9 +1322,12 @@ def random_perspective(img, targets=(), degrees=10, translate=.1, scale=.1, shea
     # ax[1].imshow(img2[:, :, ::-1])  # warped
 
     # Transform label coordinates
+    # 完成了图像的变化也要对标签进行变化
     n = len(targets)
     if n:
         # warp points
+        # 将标签坐标转换为齐次坐标
+        # 应用相同的变换矩阵
         xy = np.ones((n * 4, 3))
         xy[:, :2] = targets[:, [1, 2, 3, 4, 1, 4, 3, 2]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1
         xy = xy @ M.T  # transform
@@ -1306,6 +1337,7 @@ def random_perspective(img, targets=(), degrees=10, translate=.1, scale=.1, shea
             xy = xy[:, :2].reshape(n, 8)
 
         # create new boxes
+        # 计算变换后边界框的新坐标
         x = xy[:, [0, 2, 4, 6]]
         y = xy[:, [1, 3, 5, 7]]
         xy = np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1))).reshape(4, n).T
@@ -1320,22 +1352,33 @@ def random_perspective(img, targets=(), degrees=10, translate=.1, scale=.1, shea
         # xy = np.concatenate((x - w / 2, y - h / 2, x + w / 2, y + h / 2)).reshape(4, n).T
 
         # clip boxes
+        # 限制坐标的范围
         xy[:, [0, 2]] = xy[:, [0, 2]].clip(0, width)
         xy[:, [1, 3]] = xy[:, [1, 3]].clip(0, height)
 
         # filter candidates
+        # 过滤掉变换后不合理的目标框
         i = box_candidates(box1=targets[:, 1:5].T * s, box2=xy.T)
         targets = targets[i]
-        targets[:, 1:5] = xy[i]
+        targets[:, 1:5] = xy[i] # 将过滤后的目标保存起来
 
     return img, targets
 
 
 def box_candidates(box1, box2, wh_thr=2, ar_thr=20, area_thr=0.1):  # box1(4,n), box2(4,n)
     # Compute candidate boxes: box1 before augment, box2 after augment, wh_thr (pixels), aspect_ratio_thr, area_ratio
-    w1, h1 = box1[2] - box1[0], box1[3] - box1[1]
-    w2, h2 = box2[2] - box2[0], box2[3] - box2[1]
+    # box1: 增强前的边界框坐标 [x1, y1, x2, y2]
+    # box2: 增强后的边界框坐标 [x1, y1, x2, y2]
+    w1, h1 = box1[2] - box1[0], box1[3] - box1[1]  # 原始框的宽高
+    w2, h2 = box2[2] - box2[0], box2[3] - box2[1] # 变换后的宽高
+    #  # 2. 计算长宽比
     ar = np.maximum(w2 / (h2 + 1e-16), h2 / (w2 + 1e-16))  # aspect ratio
+    # # 3. 返回满足条件的边界框掩码
+    # (w2 > wh_thr) ： 新的目标框 宽度不能低于指定值
+    # (h2 > wh_thr)：新的目标框，高度不能低于指定值
+    # (w2 * h2 / (w1 * h1 + 1e-16) > area_thr) ：确保变化后的面积比例不会过大，否则可能导致目标太小或者消失
+    # (ar < ar_thr)：确保长宽比不能过于奇葩，可能导致过于细长
+    # 以上对比最终会形成一个true false的列表，将这个列表作为索引就会提取处索引为true的值
     return (w2 > wh_thr) & (h2 > wh_thr) & (w2 * h2 / (w1 * h1 + 1e-16) > area_thr) & (ar < ar_thr)  # candidates
 
 
