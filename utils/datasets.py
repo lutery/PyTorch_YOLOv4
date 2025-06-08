@@ -674,18 +674,27 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         else:
             # Load image
-            img, (h0, w0), (h, w) = load_image(self, index)
+            img, (h0, w0), (h, w) = load_image(self, index) # (h0, w0)图片的原始大小，(h, w)图片的缩放后的大小
 
             # Letterbox
             # self.rect：如果设置了这个，那么图片已经按照相似矩阵重新进行了排列，详细大小的图片都缩放到最近等于32倍数的矩阵大小
             shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
-            img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
+            img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment) # img: 缩放后的图片，ratio: 缩放比例，pad: 填充大小
             shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
             # shapes： （原始图片尺寸），（（长宽到目标尺寸的缩放比例）， 边界缩放到32的倍数需要填充的大小）
 
             # Load labels
             labels = []
-            x = self.labels[index]
+            x = self.labels[index] # self.labels是一个列表，存储了每张图片的目标label每个元素是一个numpy数组(ndarray)，shape为(N, 5)
+            '''
+            N: 该图片中包含的目标数量
+            5: 每个目标的5个属性值:
+            第0列: 类别id (class id)
+            第1列: x中心点坐标(标准化到0-1)
+            第2列: y中心点坐标(标准化到0-1)
+            第3列: 宽度(标准化到0-1)
+            第4列: 高度(标准化到0-1)
+            '''
             if x.size > 0:
                 # Normalized xywh to pixel xyxy format
                 labels = x.copy()
@@ -696,7 +705,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         if self.augment:
             # Augment imagespace
-            if not mosaic:
+            if not mosaic: # 看来这里的特征增强和马赛克增强是互斥的
                 img, labels = random_perspective(img, labels,
                                                  degrees=hyp['degrees'],
                                                  translate=hyp['translate'],
