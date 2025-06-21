@@ -665,7 +665,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
             # MixUp https://arxiv.org/pdf/1710.09412.pdf
             if random.random() < hyp['mixup']:
-                # 这个就是将两张图片通过透明通道叠加起来，然后将目标也叠加起来的图像增强方式
+                # 这个就是将两张图片通过透明通道叠加起来，然后将目标也叠加起来的图像增强方式                        
                 img2, labels2 = load_mosaic(self, random.randint(0, len(self.labels) - 1))
                 #img2, labels2 = load_mosaic9(self, random.randint(0, len(self.labels) - 1))
                 r = np.random.beta(8.0, 8.0)  # mixup ratio, alpha=beta=8.0
@@ -698,8 +698,9 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             if x.size > 0:
                 # Normalized xywh to pixel xyxy format
                 labels = x.copy()
-                labels[:, 1] = ratio[0] * w * (x[:, 1] - x[:, 3] / 2) + pad[0]  # pad width
-                labels[:, 2] = ratio[1] * h * (x[:, 2] - x[:, 4] / 2) + pad[1]  # pad height
+                # 将目标坐标位置转换为letterbox缩放后的坐标位置
+                labels[:, 1] = ratio[0] * w * (x[:, 1] - x[:, 3] / 2) + pad[0]  # pad width 这里应该是获取左上角的坐标 补上letterbox填充值
+                labels[:, 2] = ratio[1] * h * (x[:, 2] - x[:, 4] / 2) + pad[1]  # pad height 
                 labels[:, 3] = ratio[0] * w * (x[:, 1] + x[:, 3] / 2) + pad[0]
                 labels[:, 4] = ratio[1] * h * (x[:, 2] + x[:, 4] / 2) + pad[1]
 
@@ -722,8 +723,10 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         nL = len(labels)  # number of labels
         if nL:
+            # 这里有将xyxy转换为xywh的操作
             labels[:, 1:5] = xyxy2xywh(labels[:, 1:5])  # convert xyxy to xywh
-            labels[:, [2, 4]] /= img.shape[0]  # normalized height 0-1
+            # 归一化矩阵的长宽和中心点
+            labels[:, [2, 4]] /= img.shape[0]  # normalized height 0-1 
             labels[:, [1, 3]] /= img.shape[1]  # normalized width 0-1
 
         if self.augment:
@@ -1062,15 +1065,20 @@ def load_image(self, index):
 
 
 def augment_hsv(img, hgain=0.5, sgain=0.5, vgain=0.5):
+    # 1. 生成随机增益值
     r = np.random.uniform(-1, 1, 3) * [hgain, sgain, vgain] + 1  # random gains
+    # 2. 将图像从 BGR 转换到 HSV 空间并分离通道
     hue, sat, val = cv2.split(cv2.cvtColor(img, cv2.COLOR_BGR2HSV))
     dtype = img.dtype  # uint8
 
+    # 3. 创建查找表并应用增益
     x = np.arange(0, 256, dtype=np.int16)
-    lut_hue = ((x * r[0]) % 180).astype(dtype)
-    lut_sat = np.clip(x * r[1], 0, 255).astype(dtype)
-    lut_val = np.clip(x * r[2], 0, 255).astype(dtype)
+    lut_hue = ((x * r[0]) % 180).astype(dtype)# 色调范围是0-180
+    lut_sat = np.clip(x * r[1], 0, 255).astype(dtype) # 饱和度范围是0-255
+    lut_val = np.clip(x * r[2], 0, 255).astype(dtype)# 明度范围是0-255
 
+    # 4. 合并通道并转回 BGR
+    # 利用cv2.LUT函数对每个通道应用查找表,将色调、饱和度和明度通道分别进行查找表转换
     img_hsv = cv2.merge((cv2.LUT(hue, lut_hue), cv2.LUT(sat, lut_sat), cv2.LUT(val, lut_val))).astype(dtype)
     cv2.cvtColor(img_hsv, cv2.COLOR_HSV2BGR, dst=img)  # no return needed
 
