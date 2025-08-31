@@ -131,16 +131,21 @@ def create_dataloader9(path, imgsz, batch_size, stride, opt, hyp=None, augment=F
                                     sampler=sampler,
                                     pin_memory=True,
                                     collate_fn=LoadImagesAndLabels9.collate_fn)  # torch.utils.data.DataLoader()
+    # collate_fn定义如何将一个batch中的多个样本合并成一个mini-batch
     return dataloader, dataset
 
 
 class InfiniteDataLoader(torch.utils.data.dataloader.DataLoader):
     """ Dataloader that reuses workers
     Uses same syntax as vanilla DataLoader
+    一个无限循环的数据加载器，主要可以解决以下的问题：
+    避免每个epoch结束后重新创建worker进程的开销
+    实现真正的"无限"数据流，适合长时间训练
     """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # 用RepeatSampler包装原始的batch_sampler，实现无限循环
         object.__setattr__(self, 'batch_sampler', _RepeatSampler(self.batch_sampler))
         self.iterator = super().__iter__()
 
@@ -152,7 +157,7 @@ class InfiniteDataLoader(torch.utils.data.dataloader.DataLoader):
             yield next(self.iterator)
 
 
-class _RepeatSampler(object):
+class _RepeatSampler(object):   
     """ Sampler that repeats forever
     Args:
         sampler (Sampler)
@@ -1037,9 +1042,12 @@ class LoadImagesAndLabels9(Dataset):  # for training/testing
 
     @staticmethod
     def collate_fn(batch):
-        img, label, path, shapes = zip(*batch)  # transposed
+        img, label, path, shapes = zip(*batch)  # transposed 解包
         for i, l in enumerate(label):
             l[:, 0] = i  # add target image index for build_targets()
+            # 将每个图片的索引位置保存到label中的第0列，这样每个label就知道自己的图片属于当前
+            # 批次的哪个位置
+        # 将图片、标签 堆叠在一起，其余的保持不变
         return torch.stack(img, 0), torch.cat(label, 0), path, shapes
 
 

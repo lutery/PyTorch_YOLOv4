@@ -265,18 +265,29 @@ YOLOv4 采用余弦退火学习率调度器，是为了让训练过程更平滑�
     dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt,
                                             hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect,
                                             rank=rank, world_size=opt.world_size, workers=opt.workers)
-    mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
-    nb = len(dataloader)  # number of batches
+    mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class 获取label的最大值，也就是最大的分类数
+    nb = len(dataloader)  # number of batches 有多少个batch
     assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
+    '''
+    mlc (max label class): 是数据集中出现的最大类别索引
+    nc (number of classes): 是配置文件中定义的类别总数
+    这个断言的目的是：
+
+    验证数据集标签的有效性：确保所有标签的类别索引都在有效范围内
+    防止索引越界：标签索引必须在 [0, nc-1] 范围内
+    检查数据集一致性：确保数据集标签与配置文件中定义的类别数相匹配
+    '''
 
     # Process 0
     if rank in [-1, 0]:
+        # 确保测试集合仅在主进程中创建
         ema.updates = start_epoch * nb // accumulate  # set EMA updates
         testloader = create_dataloader(test_path, imgsz_test, batch_size*2, gs, opt,
                                        hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True,
                                        rank=-1, world_size=opt.world_size, workers=opt.workers)[0]  # testloader
 
         if not opt.resume:
+            # 绘制数据集中的分类分布
             labels = np.concatenate(dataset.labels, 0)
             c = torch.tensor(labels[:, 0])  # classes
             # cf = torch.bincount(c.long(), minlength=nc) + 1.  # frequency
@@ -293,36 +304,40 @@ YOLOv4 采用余弦退火学习率调度器，是为了让训练过程更平滑�
             #     check_anchors(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
 
     # Model parameters
-    hyp['cls'] *= nc / 80.  # scale coco-tuned hyp['cls'] to current dataset
-    model.nc = nc  # attach number of classes to model
+    hyp['cls'] *= nc / 80.  # scale coco-tuned hyp['cls'] to current dataset 看md文件
+    model.nc = nc  # attach number of classes to model 将定义的类别数设置到model中
     model.hyp = hyp  # attach hyperparameters to model
     model.gr = 1.0  # iou loss ratio (obj_loss = 1.0 or iou)
-    model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device)  # attach class weights
-    model.names = names
+    model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device)  # attach class weights 根据每个样本出现的频率计算每个类别的概率
+    model.names = names 
 
     # Start training
     t0 = time.time()
+    # 学习率上涨的训练次数
     nw = max(round(hyp['warmup_epochs'] * nb), 1000)  # number of warmup iterations, max(3 epochs, 1k iterations)
     # nw = min(nw, (epochs - start_epoch) / 2 * nb)  # limit warmup to < 1/2 of training
-    maps = np.zeros(nc)  # mAP per class
+    maps = np.zeros(nc)  # mAP per class 创建一个空的map，用来存储每个样本的mAP
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
-    scheduler.last_epoch = start_epoch - 1  # do not move
+    scheduler.last_epoch = start_epoch - 1  # do not move 计算其实的epoch
     scaler = amp.GradScaler(enabled=cuda)
     logger.info('Image sizes %g train, %g test\n'
                 'Using %g dataloader workers\nLogging results to %s\n'
                 'Starting training for %g epochs...' % (imgsz, imgsz_test, dataloader.num_workers, save_dir, epochs))
     
-    torch.save(model, wdir / 'init.pt')
+    torch.save(model, wdir / 'init.pt') 
     
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
 
         # Update image weights (optional)
         if opt.image_weights:
+            # image_weights 参数用于按照图像难度和类别平衡进行带权重的图像采样，使训练过程更加关注难以检测的样本和稀有类别
             # Generate indices
             if rank in [-1, 0]:
+                # 根据样本出现的频率和计算每个样本的mAP得到样本权重，即将少量样本、低map的样本提高采样的频率
                 cw = model.class_weights.cpu().numpy() * (1 - maps) ** 2  # class weights
                 iw = labels_to_image_weights(dataset.labels, nc=nc, class_weights=cw)  # image weights
+                # 更新dataset的索引，增加权重高的图片的出现频率
                 dataset.indices = random.choices(range(dataset.n), weights=iw, k=dataset.n)  # rand weighted idx
             # Broadcast if DDP
             if rank != -1:
