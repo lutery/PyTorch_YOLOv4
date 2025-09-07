@@ -341,9 +341,26 @@ YOLOv4 采用余弦退火学习率调度器，是为了让训练过程更平滑�
                 dataset.indices = random.choices(range(dataset.n), weights=iw, k=dataset.n)  # rand weighted idx
             # Broadcast if DDP
             if rank != -1:
+                # 将计算好的权重同步到各个进程
                 indices = (torch.tensor(dataset.indices) if rank == 0 else torch.zeros(dataset.n)).int()
+                # 使用 PyTorch 分布式通信将 rank 0 的 indices 广播给所有进程
+                # 参数 0 表示从 rank 0 进程广播
+                '''
+                # 在调用 broadcast 之前：
+                # rank 0: indices = torch.tensor([实际的索引数据])
+                # rank 1: indices = torch.zeros(dataset.n)  # 全零张量
+                # rank 2: indices = torch.zeros(dataset.n)  # 全零张量
+
+                dist.broadcast(indices, 0)  # 广播操作
+
+                # 在调用 broadcast 之后：
+                # rank 0: indices = torch.tensor([实际的索引数据])  # 保持不变
+                # rank 1: indices = torch.tensor([实际的索引数据])  # 已更新！
+                # rank 2: indices = torch.tensor([实际的索引数据])  # 已更新！
+                '''
                 dist.broadcast(indices, 0)
                 if rank != 0:
+                    # 非主进程接收广播的数据并更新自己的 dataset.indices
                     dataset.indices = indices.cpu().numpy()
 
         # Update mosaic border
@@ -352,39 +369,70 @@ YOLOv4 采用余弦退火学习率调度器，是为了让训练过程更平滑�
 
         mloss = torch.zeros(4, device=device)  # mean losses
         if rank != -1:
-            dataloader.sampler.set_epoch(epoch)
+            dataloader.sampler.set_epoch(epoch) # 设置当前的训练轮次，确保随机数种子在每一轮训练都不一样
         pbar = enumerate(dataloader)
         logger.info(('\n' + '%10s' * 8) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'total', 'targets', 'img_size'))
         if rank in [-1, 0]:
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
-            ni = i + nb * epoch  # number integrated batches (since train start)
+            ni = i + nb * epoch  # number integrated batches (since train start) 计算在第几个batch 全局
+            '''
+            non_blocking=False（默认）：同步传输，CPU 等待数据完全传输到 GPU 后才继续
+            non_blocking=True：异步传输，CPU 立即继续执行，数据在后台传输
+            '''
             imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
 
             # Warmup
             if ni <= nw:
+                # 线性预热学习率
                 xi = [0, nw]  # x interp
                 # model.gr = np.interp(ni, xi, [0.0, 1.0])  # iou loss ratio (obj_loss = 1.0 or iou)
-                accumulate = max(1, np.interp(ni, xi, [1, nbs / total_batch_size]).round())
+                # 插值过程：
+                # 当 ni = 0：accumulate = 1（不累积，每个批次都更新）
+                # 当 ni = nw：accumulate = nbs / total_batch_size（正常累积步数）
+                accumulate = max(1, np.interp(ni, xi, [1, nbs / total_batch_size]).round()) # 在预热期间逐渐调整梯度累积步数
                 for j, x in enumerate(optimizer.param_groups):
                     # bias lr falls from 0.1 to lr0, all other lrs rise from 0.0 to lr0
+                    '''
+                    j=0：pg0（其他参数，如 BN 层参数）
+                    j=1：pg1（卷积权重）
+                    j=2：pg2（偏置参数）
+
+                    # 起始学习率
+                    start_lr = hyp['warmup_bias_lr'] if j == 2 else 0.0
+                    # 目标学习率  
+                    end_lr = x['initial_lr'] * lf(epoch)
+                    # 线性插值
+                    x['lr'] = np.interp(ni, xi, [start_lr, end_lr])
+
+                    偏置参数（j=2）：从 warmup_bias_lr（通常是 0.1）开始，逐渐降到目标学习率
+                    其他参数（j=0,1）：从 0.0 开始，逐渐升到目标学习率
+                    '''
                     x['lr'] = np.interp(ni, xi, [hyp['warmup_bias_lr'] if j == 2 else 0.0, x['initial_lr'] * lf(epoch)])
                     if 'momentum' in x:
+                        '''
+                        起始动量：warmup_momentum（通常较小，如 0.8）
+                        目标动量：momentum（通常较大，如 0.937）
+                        效果：预热期间使用较小动量，避免训练初期的不稳定
+                        '''
                         x['momentum'] = np.interp(ni, xi, [hyp['warmup_momentum'], hyp['momentum']])
 
             # Multi-scale
             if opt.multi_scale:
+                # 是否开启多尺寸训练
                 sz = random.randrange(imgsz * 0.5, imgsz * 1.5 + gs) // gs * gs  # size
-                sf = sz / max(imgs.shape[2:])  # scale factor
+                sf = sz / max(imgs.shape[2:])  # scale factor 计算缩放因子
                 if sf != 1:
+                    # 线性缩放图片，同时保持图片的尺寸是gs的倍数
                     ns = [math.ceil(x * sf / gs) * gs for x in imgs.shape[2:]]  # new shape (stretched to gs-multiple)
                     imgs = F.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
 
             # Forward
+            # 在 autocast 上下文中，PyTorch 会自动选择合适的数据类型（float16 或 float32）来执行运算，以提高训练速度和减少显存使用。
             with amp.autocast(enabled=cuda):
-                pred = model(imgs)  # forward
-                loss, loss_items = compute_loss(pred, targets.to(device), model)  # loss scaled by batch_size
+                pred = model(imgs)  # forward  # 部分使用 float16，部分使用 float32
+                loss, loss_items = compute_loss(pred, targets.to(device), model)  # loss scaled by batch_size # 自动选择精度
                 if rank != -1:
                     loss *= opt.world_size  # gradient averaged between devices in DDP mode
 

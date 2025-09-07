@@ -664,6 +664,11 @@ class Darknet(nn.Module):
         self.info(verbose) if not ONNX_EXPORT else None  # print model description
 
     def forward(self, x, augment=False, verbose=False):
+        '''
+        x: 图片的tensor数据 batch_size, 3, height, width
+        augment: 是否进行增强 
+        verbose: 是否打印每一层的输出
+        '''
 
         if not augment:
             return self.forward_once(x)
@@ -694,8 +699,14 @@ class Darknet(nn.Module):
             return y, None
 
     def forward_once(self, x, augment=False, verbose=False):
+        '''
+        x: 图片的tensor数据 batch_size, 3, height, width
+        augment: 是否进行增强 
+        verbose: 是否打印每一层的输出
+        '''
+
         img_size = x.shape[-2:]  # height, width
-        yolo_out, out = [], []
+        yolo_out, out = [], [] # yolo_out存储yolo层的输出，out存储每一层的输出
         if verbose:
             print('0', x.shape)
             str = ''
@@ -705,16 +716,17 @@ class Darknet(nn.Module):
             nb = x.shape[0]  # batch size
             s = [0.83, 0.67]  # scales
             x = torch.cat((x,
-                           torch_utils.scale_img(x.flip(3), s[0]),  # flip-lr and scale
-                           torch_utils.scale_img(x, s[1]),  # scale
+                           torch_utils.scale_img(x.flip(3), s[0]),  # flip-lr and scale flip(3)表示具体含义是沿着第3个维度（索引为3）进行翻转
+                           torch_utils.scale_img(x, s[1]),  # scale 单纯的缩放图片
                            ), 0)
 
         for i, module in enumerate(self.module_list):
+            # 遍历每一个module
             name = module.__class__.__name__
             #print(name)
             if name in ['WeightedFeatureFusion', 'FeatureConcat', 'FeatureConcat2', 'FeatureConcat3', 'FeatureConcat_l', 'ScaleChannel', 'ScaleSpatial']:  # sum, concat
                 if verbose:
-                    l = [i - 1] + module.layers  # layers
+                    l = [i - 1] + module.layers  # layers 记录层索引：当前层的前一层索引 + 需要融合的层索引 例如：如果当前是第10层，需要融合第5层和第8层，则 l = [9, 5, 8]
                     sh = [list(x.shape)] + [list(out[i].shape) for i in module.layers]  # shapes
                     str = ' >> ' + ' + '.join(['layer %g %s' % x for x in zip(l, sh)])
                 x = module(x, out)  # WeightedFeatureFusion(), FeatureConcat()
