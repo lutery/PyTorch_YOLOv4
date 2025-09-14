@@ -342,7 +342,7 @@ class YOLOLayer(nn.Module):
         super(YOLOLayer, self).__init__()
         self.anchors = torch.Tensor(anchors)
         self.index = yolo_index  # 当前 YOLO 层在网络中的索引
-        self.layers = layers  #  短接层索引
+        self.layers = layers  #  短接层索引，需要从其他层获取输出的层索引
         self.stride = stride  # layer stride 表示当前 YOLO 层的下采样倍数
         # 短接层的数量
         self.nl = len(layers)  # number of output layers (3)
@@ -444,22 +444,31 @@ class YOLOLayer(nn.Module):
         ASFF = False  # https://arxiv.org/abs/1911.09516
         if ASFF:
             # ASFF 是 Adaptive Spatial Feature Fusion 的缩写，中文翻译为自适应空间特征融合。它是一种用于目标检测的特征融合方法
-            # todo还差这里的理解
             i, n = self.index, self.nl  # index in layers, number of layers
-            p = out[self.layers[i]]
-            bs, _, ny, nx = p.shape  # bs, 255, 13, 13
-            if (self.nx, self.ny) != (nx, ny):
+            p = out[self.layers[i]] # 从out中获取当前yolo层的从其他层需要的输入特征图
+            bs, _, ny, nx = p.shape  # bs, 255, 13, 13  # bs, channels，输入特征图的尺寸， 输入特征图的尺寸 当前层的输入特征图
+            if (self.nx, self.ny) != (nx, ny): # 确保输入特征图的尺寸和记录的尺寸一致
                 self.create_grids((nx, ny), p.device)
 
             # outputs and weights
+            # p[:, -n:]：提取特征图的最后n个通道作为权重预测 比如P4层（n=3），会提取最后3个通道：[w_P3, w_P4, w_P5]
+            # torch.sigmoid()：将权重压缩到[0,1]范围
+            # * (2/n)：权重归一化，确保平均权重约为2/3
             # w = F.softmax(p[:, -n:], 1)  # normalized weights
             w = torch.sigmoid(p[:, -n:]) * (2 / n)  # sigmoid weights (faster)
             # w = w / w.sum(1).unsqueeze(1)  # normalize across layer dimension
 
             # weighted ASFF sum
+            # [out[self.layers[i]][:, :-n]](http://vscodecontentref/5)：当前层的特征（去掉权重通道）
+            # w[:, i:i + 1]：当前层对应的权重
+            # 相乘得到当前层的加权特征
             p = out[self.layers[i]][:, :-n] * w[:, i:i + 1]
             for j in range(n):
                 if j != i:
+                    # [out[self.layers[j]][:, :-n]](http://vscodecontentref/7)：获取第j层的特征（去掉权重通道）
+                    # F.interpolate(...)：将其他尺度的特征插值到当前层的尺寸
+                    # w[:, j:j + 1]：第j层对应的权重
+                    # p +=：累加所有层的加权特征
                     p += w[:, j:j + 1] * \
                          F.interpolate(out[self.layers[j]][:, :-n], size=[ny, nx], mode='bilinear', align_corners=False)
 
@@ -521,7 +530,7 @@ class YOLOLayer(nn.Module):
             # 如果有多个类别，返回 类别概率 × 置信度，如果只有一个类别，则返回 置信度
             p_cls = torch.sigmoid(p[:, 4:5]) if self.nc == 1 else \
                 torch.sigmoid(p[:, 5:self.no]) * torch.sigmoid(p[:, 4:5])  # conf
-            # 返回预测的置信度和类别概率, 将中心点坐标归一化到 [0, 1] 范围（对比全图的相对位置），预测框的宽高（基于特征图尺度的相对宽高）
+            # 返回预测的置信度和类别概率, 将中心点坐标归一化到 [0, 1] 范围（对比原图图的相对位置），预测框的宽高（基于原图尺度的相对宽高）
             return p_cls, xy * ng, wh
 
         else:  # inference
@@ -725,12 +734,15 @@ class Darknet(nn.Module):
             name = module.__class__.__name__
             #print(name)
             if name in ['WeightedFeatureFusion', 'FeatureConcat', 'FeatureConcat2', 'FeatureConcat3', 'FeatureConcat_l', 'ScaleChannel', 'ScaleSpatial']:  # sum, concat
+                # 因为这些层需要从其他层获取输出，所以需要独立的处理
                 if verbose:
                     l = [i - 1] + module.layers  # layers 记录层索引：当前层的前一层索引 + 需要融合的层索引 例如：如果当前是第10层，需要融合第5层和第8层，则 l = [9, 5, 8]
-                    sh = [list(x.shape)] + [list(out[i].shape) for i in module.layers]  # shapes
+                    sh = [list(x.shape)] + [list(out[i].shape) for i in module.layers]  # shapes 打印当前层的输入shape和待融合的输入shape作为对比
                     str = ' >> ' + ' + '.join(['layer %g %s' % x for x in zip(l, sh)])
-                x = module(x, out)  # WeightedFeatureFusion(), FeatureConcat()
+                x = module(x, out)  # WeightedFeatureFusion(), FeatureConcat() 进行处理
             elif name == 'YOLOLayer':
+                # 如果是训练模式，则输出的是batch_size, channels(255), grid_h, grid_w
+                # 如果是推理模式，则输出的是batch_size, num_anchors*grid_h*grid_w, 85
                 yolo_out.append(module(x, out))
             elif name == 'JDELayer':
                 yolo_out.append(module(x, out))
@@ -739,26 +751,35 @@ class Darknet(nn.Module):
                 #print(x.shape)
                 x = module(x)
 
+            # self.routs表示那些层的输出会被其他层引用，所以这里是判断，如果是需要被其他层引用，则保存当前层的输出
             out.append(x if self.routs[i] else [])
             if verbose:
+                # 调试信息，打印当前层的输出x的shape
                 print('%g/%g %s -' % (i, len(self.module_list), name), list(x.shape), str)
                 str = ''
 
-        if self.training:  # train
+        if self.training:  # train 所有层遍历完成了，如果是训练模式则直接返回yolo的输出即可
             return yolo_out
         elif ONNX_EXPORT:  # export
+            # ONNX模式下，yolo_out是一个列表，里面存储了每个yolo层的输出    
+            # 格式是：分类置信度，xy,wh
+            # torch.cat(x, 0)是将每个yolo层的输出进行拼接，得到总分类置信度，xy,wh
             x = [torch.cat(x, 0) for x in zip(*yolo_out)]
+            # x[0]代表分类置信度
+            # x[1:3]代表xy,wh，通过cat使其拼接起来
+            # 最终得到scores（置信度）, boxes（坐标，但还是相对于原图得到比例）: 3780x80, 3780x4
             return x[0], torch.cat(x[1:3], 1)  # scores, boxes: 3780x80, 3780x4
-        else:  # inference or test
+        else:  # inference or test 如果是对于pytorch的推理模式
             x, p = zip(*yolo_out)  # inference output, training output
-            x = torch.cat(x, 1)  # cat yolo outputs
+            x = torch.cat(x, 1)  # cat yolo outputs 将所有yolo层的预测框进行拼接
             if augment:  # de-augment results
+                # 如果开启了图片增强，那么对于输入的特征图是有做缩放、镜像处理，所以需要进行逆处理
                 x = torch.split(x, nb, dim=0)
                 x[1][..., :4] /= s[0]  # scale
                 x[1][..., 0] = img_size[1] - x[1][..., 0]  # flip lr
                 x[2][..., :4] /= s[1]  # scale
-                x = torch.cat(x, 1)
-            return x, p
+                x = torch.cat(x, 1) # 再次拼接回来
+            return x, p # 返回所有的预测框和每个预测框对应物体类别的的置信度
 
     def fuse(self):
         # Fuse Conv2d + BatchNorm2d layers throughout model
