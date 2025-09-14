@@ -60,9 +60,15 @@ class FocalLoss(nn.Module):
 
 
 def compute_loss(p, targets, model):  # predictions, targets, model
+    '''
+    p:  这里pred是一个list，包含三个yolo层的输出， 每一层的shape=(bs, 3, 13, 13, 85)  # (bs, anchors, grid, grid, classes + xywh)
+    targets: targets.shape = [N, 6]，其中6=(image, class, x, y, w, h)
+    model: model
+    '''
     device = targets.device
     #print(device)
-    lcls, lbox, lobj = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
+    # todo 这几个的作用
+    lcls, lbox, lobj = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device) 
     tcls, tbox, indices, anchors = build_targets(p, targets, model)  # targets
     h = model.hyp  # hyperparameters
 
@@ -125,25 +131,40 @@ def compute_loss(p, targets, model):  # predictions, targets, model
 
 
 def build_targets(p, targets, model):
+    '''
+    p:  这里pred是一个list，包含三个yolo层的输出， 每一层的shape=(bs, 3, 13, 13, 85)  # (bs, anchors, grid, grid, classes + xywh)
+    targets: targets.shape = [N, 6]，其中6=(image, class, x, y, w, h)，其中的xywh是相对于整张图像的归一化坐标
+    model: model
+    '''
     device = targets.device
-    nt = targets.shape[0]  # number of anchors, targets
+    nt = targets.shape[0]  # number of anchors, targets  获取当前batch中的所有目标
     tcls, tbox, indices, anch = [], [], [], []
-    gain = torch.ones(6, device=targets.device)  # normalized to gridspace gain
-    off = torch.tensor([[1, 0], [0, 1], [-1, 0], [0, -1]], device=targets.device).float()  # overlap offsets
+    gain = torch.ones(6, device=targets.device)  # normalized to gridspace gain  todo 作用
+    off = torch.tensor([[1, 0], [0, 1], [-1, 0], [0, -1]], device=targets.device).float()  # overlap offsets todo作用
 
     g = 0.5  # offset
-    multi_gpu = is_parallel(model)
+    multi_gpu = is_parallel(model) # 是否多GPU训练，因为多GPU时，model会被封装成nn.DataParallel或nn.DistributedDataParallel，所以要获取yolo_layers需要从不同成员变量获取出来
+    # yolo_layers表示yolo层的索引，遍历每一层的yolo
     for i, jj in enumerate(model.module.yolo_layers if multi_gpu else model.yolo_layers):
-        # get number of grid points and anchor vec for this yolo layer
+        # get number of grid points and anchor vec for this yolo layer 获取指定层的yolo的anchors
         anchors = (model.module.module_list[jj].anchor_vec if multi_gpu else model.module_list[jj].anchor_vec).to(device)
+        # p[i]：获取指定层的yolo输出
+        # p[i].shape = (bs, anchors, grid_h, grid_w, classes + xywh)
+        # [3, 2, 3, 2]：获取指定层的yolo输出的grid_h和grid_w [grid_w, grid_h, grid_w, grid_h]
+        # gain = [1, 1, grid_w, grid_h, grid_w, grid_h]
         gain[2:] = torch.tensor(p[i].shape)[[3, 2, 3, 2]]  # xyxy gain
 
         # Match targets to anchors
+        # targets * gain：是将归一化坐标转换为网格坐标系的关键操作， shape is  [N, image, class, x, y, w, h]
         a, t, offsets = [], targets * gain, 0
-        if nt:
-            na = anchors.shape[0]  # number of anchors
+        if nt: # 如果有目标
+            na = anchors.shape[0]  # number of anchors 当前yolo层的anchor数量，默认是3
+            # torch.arange(na)：生成一个从0到na-1的张量，shape =(na,)
+            # .view(na, 1)：将其变形为(na, 1)
+            # .repeat(1, nt)：将其在第二个维度上重复nt次，变为(na, nt)，其中nt代表target中有多少个目标，这样子为每一个anchors都分配了nt个目标，也就是所有的target都会去和每一个anchor去计算iou
+            # .to(device)：将其移动到指定设备上
             at = torch.arange(na).view(na, 1).repeat(1, nt).to(device)  # anchor tensor, same as .repeat_interleave(nt)
-            r = t[None, :, 4:6] / anchors[:, None]  # wh ratio
+            r = t[None, :, 4:6] / anchors[:, None]  # wh ratio (3, n, 2)  wh是相对于整张图像的归一化坐标，除以anchors后，变成了相对于anchors的归一化坐标
             j = torch.max(r, 1. / r).max(2)[0] < model.hyp['anchor_t']  # compare
             # j = wh_iou(anchors, t[:, 4:6]) > model.hyp['iou_t']  # iou(3,n) = wh_iou(anchors(3,2), gwh(n,2))
             a, t = at[j], t.repeat(na, 1, 1)[j]  # filter

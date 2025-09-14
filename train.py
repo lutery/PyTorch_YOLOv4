@@ -431,7 +431,7 @@ YOLOv4 采用余弦退火学习率调度器，是为了让训练过程更平滑�
             # Forward
             # 在 autocast 上下文中，PyTorch 会自动选择合适的数据类型（float16 或 float32）来执行运算，以提高训练速度和减少显存使用。
             with amp.autocast(enabled=cuda):
-                pred = model(imgs)  # forward  # 部分使用 float16，部分使用 float32
+                pred = model(imgs)  # forward  # 部分使用 float16，部分使用 float32 这里pred是一个list，包含三个yolo层的输出
                 loss, loss_items = compute_loss(pred, targets.to(device), model)  # loss scaled by batch_size # 自动选择精度
                 if rank != -1:
                     loss *= opt.world_size  # gradient averaged between devices in DDP mode
