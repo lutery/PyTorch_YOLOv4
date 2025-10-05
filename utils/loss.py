@@ -133,7 +133,7 @@ def compute_loss(p, targets, model):  # predictions, targets, model
 def build_targets(p, targets, model):
     '''
     p:  这里pred是一个list，包含三个yolo层的输出， 每一层的shape=(bs, 3, 13, 13, 85)  # (bs, anchors, grid, grid, classes + xywh)
-    targets: targets.shape = [N, 6]，其中6=(image, class, x, y, w, h)，其中的xywh是相对于整张图像的归一化坐标
+    targets: targets.shape = [N, 6]，其中6=(image, class, x, y, w, h)，其中的xywh是相对于整张图像的归一化坐标，image时图片的索引
     model: model
     '''
     device = targets.device
@@ -184,25 +184,77 @@ def build_targets(p, targets, model):
 
             # overlaps
             gxy = t[:, 2:4]  # grid xy 获取匹配目标框的中心点坐标，shape is (M, 2)
-            z = torch.zeros_like(gxy) # z shape is (M, 2)，全0张量
+            z = torch.zeros_like(gxy) # z shape is (M, 2)，全0张量 零偏移
             # 如果目标中心点靠近网格边界，将该目标也分配给相邻的网格，增加正样本数量。
+            # gxy % 1.  # 获取小数部分，表示在网格内的相对位置
+            # 例如：gxy = [13.3, 7.2]
+            # gxy % 1. = [0.3, 0.2]
+            # gxy % 1. < g  # 小数部分 < 0.5，说明靠近网格左侧或上侧 # [0.3 < 0.5, 0.2 < 0.5] = [True, True]
+            # # 坐标 > 1，确保不是第0个网格（避免越界） # [13.3 > 1, 7.2 > 1] = [True, True]
+            # # 两个条件同时满足# shape = (M, 2)，表示 [x方向是否满足, y方向是否满足] 得到一个布尔矩阵 【True, True】表示x和y方向都满足
+            # # 转置后分别赋值给 j 和 k
+            # # j: x方向满足条件的目标，shape = (M,)
+            # k: y方向满足条件的目标，shape = (M,)
             j, k = ((gxy % 1. < g) & (gxy > 1.)).T
+            # 小数部分 > 0.5，说明靠近网格右侧或下侧
+            # [0.3 > 0.5, 0.2 > 0.5] = [False, False]
+            # gain[[2, 3]] - 1.  # 网格最大索引 = [grid_w - 1, grid_h - 1] # 例如：26x26 网格 -> [25, 25]
+            #  # 确保不是最后一个网格（避免越界） # [13.3 < 25, 7.2 < 25] = [True, True]
+            #  # 转置后分别赋值
+            # # l: x方向满足条件的目标，shape = (M,)
+            # m: y方向满足条件的目标，shape = (M,)
             l, m = ((gxy % 1. > (1 - g)) & (gxy < (gain[[2, 3]] - 1.))).T
+            # 将筛选出来的新增正样本组合起来，扩展 anchor 和目标信息
+            '''
+            # 原始匹配结果
+            a.shape = (M,)      # M 个匹配的 anchor 索引
+            t.shape = (M, 6)    # M 个匹配的目标信息
+
+            # 扩展后
+            a_new = torch.cat((
+                a,      # 原始目标
+                a[j],   # 靠近左侧的目标（额外分配给左侧网格）
+                a[k],   # 靠近上侧的目标（额外分配给上侧网格）
+                a[l],   # 靠近右侧的目标（额外分配给右侧网格）
+                a[m]    # 靠近下侧的目标（额外分配给下侧网格）
+            ), 0)
+
+            # 新的数量 ≤ M * 5（最多5倍，实际上会少一些）
+            '''
             a, t = torch.cat((a, a[j], a[k], a[l], a[m]), 0), torch.cat((t, t[j], t[k], t[l], t[m]), 0)
+            # 第四行：计算偏移量
+            '''
+            off = torch.tensor([[1, 0], [0, 1], [-1, 0], [0, -1]])
+
+            offsets = torch.cat((
+                z,                # [0, 0]，原始网格，无偏移
+                z[j] + off[0],    # [1, 0]，向右偏移
+                z[k] + off[1],    # [0, 1]，向下偏移
+                z[l] + off[2],    # [-1, 0]，向左偏移
+                z[m] + off[3]     # [0, -1]，向上偏移
+            ), 0) * g  # 乘以 0.5，得到实际偏移量
+
+            # offsets.shape = (扩展后的数量, 2)
+            '''
             offsets = torch.cat((z, z[j] + off[0], z[k] + off[1], z[l] + off[2], z[m] + off[3]), 0) * g
 
         # Define
-        b, c = t[:, :2].long().T  # image, class
-        gxy = t[:, 2:4]  # grid xy
-        gwh = t[:, 4:6]  # grid wh
-        gij = (gxy - offsets).long()
-        gi, gj = gij.T  # grid xy indices
+        b, c = t[:, :2].long().T  # image, class 获取图片索引和类别索引，shape is (M,)  M代表匹配上的目标数量
+        gxy = t[:, 2:4]  # grid xy 获取匹配目标框的中心点坐标，shape is (M, 2)
+        gwh = t[:, 4:6]  # grid wh 获取匹配目标框的宽高，shape is (M, 2)
+        gij = (gxy - offsets).long() # 正式对坐标进行偏移，增加样本数量，其中使用long取整
+        gi, gj = gij.T  # grid xy indices 得到网格索引，shape is (M,)  M代表匹配上的目标数量
 
         # Append
-        indices.append((b, a, gj, gi))  # image, anchor, grid indices
+        indices.append((b, a, gj, gi))  # image, anchor, grid indices # b: 图片索引, a: anchor索引, gj: 网格y索引, gi: 网格x索引组合
         # indices.append((b, a, gj.clamp_(0, int(gain[3] - 1)), gi.clamp_(0, int(gain[2] - 1))))  # image, anchor, grid indices
-        tbox.append(torch.cat((gxy - gij, gwh), 1))  # box
-        anch.append(anchors[a])  # anchors
-        tcls.append(c)  # class
+        tbox.append(torch.cat((gxy - gij, gwh), 1))  # box 是在构建目标框的相对坐标表示，xy是相对于网格左上角的偏移，wh是宽高 shape = (M, 4)，格式为 [相对x, 相对y, w, h]
+        anch.append(anchors[a])  # anchors 提取匹配的anchor，shape = (M, 2)
+        tcls.append(c)  # class 提取目标类别，shape = (M,)
 
+    # 返回所有yolo层的目标信息
+    # tcls： list of (M,)  每个元素是一个张量，包含该层所有匹配目标的类别索引
+    # tbox： list of (M, 4) 每个元素是一个张量，包含该层所有匹配目标的边界框，格式为 [相对x, 相对y, w, h]
+    # indices： list of (b, a, gj, gi) 每个元素是一个元组，包含该层所有匹配目标的图片索引、anchor索引、网格y索引和网格x索引
+    # anch： list of (M, 2) 每个元素是一个张量，包含该层所有匹配目标的anchor尺寸，格式为 [anchor_w, anchor_h]
     return tcls, tbox, indices, anch
