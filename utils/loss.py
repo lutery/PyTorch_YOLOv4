@@ -257,4 +257,5 @@ def build_targets(p, targets, model):
     # tbox： list of (M, 4) 每个元素是一个张量，包含该层所有匹配目标的边界框，格式为 [相对x, 相对y, w, h]
     # indices： list of (b, a, gj, gi) 每个元素是一个元组，包含该层所有匹配目标的图片索引、anchor索引、网格y索引和网格x索引
     # anch： list of (M, 2) 每个元素是一个张量，包含该层所有匹配目标的anchor尺寸，格式为 [anchor_w, anchor_h]
+    # todo，后续要查看损失如何计算相同anchor去计算匹配不同中心点的目标
     return tcls, tbox, indices, anch
