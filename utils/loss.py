@@ -140,9 +140,9 @@ def build_targets(p, targets, model):
     nt = targets.shape[0]  # number of anchors, targets  获取当前batch中的所有目标
     tcls, tbox, indices, anch = [], [], [], []
     gain = torch.ones(6, device=targets.device)  # normalized to gridspace gain  todo 作用
-    off = torch.tensor([[1, 0], [0, 1], [-1, 0], [0, -1]], device=targets.device).float()  # overlap offsets todo作用
+    off = torch.tensor([[1, 0], [0, 1], [-1, 0], [0, -1]], device=targets.device).float()  # overlap offsets todo作用 # 四个方向的偏移
 
-    g = 0.5  # offset
+    g = 0.5  # offset 偏移阈值
     multi_gpu = is_parallel(model) # 是否多GPU训练，因为多GPU时，model会被封装成nn.DataParallel或nn.DistributedDataParallel，所以要获取yolo_layers需要从不同成员变量获取出来
     # yolo_layers表示yolo层的索引，遍历每一层的yolo
     for i, jj in enumerate(model.module.yolo_layers if multi_gpu else model.yolo_layers):
@@ -155,7 +155,7 @@ def build_targets(p, targets, model):
         gain[2:] = torch.tensor(p[i].shape)[[3, 2, 3, 2]]  # xyxy gain
 
         # Match targets to anchors
-        # targets * gain：是将归一化坐标转换为网格坐标系的关键操作， shape is  [N, image, class, x, y, w, h]
+        # targets * gain：是将归一化坐标转换为网格坐标系的关键操作， shape is  [N, image, class, x, y, w, h]，也就是t
         a, t, offsets = [], targets * gain, 0
         if nt: # 如果有目标
             na = anchors.shape[0]  # number of anchors 当前yolo层的anchor数量，默认是3
@@ -163,15 +163,29 @@ def build_targets(p, targets, model):
             # .view(na, 1)：将其变形为(na, 1)
             # .repeat(1, nt)：将其在第二个维度上重复nt次，变为(na, nt)，其中nt代表target中有多少个目标，这样子为每一个anchors都分配了nt个目标，也就是所有的target都会去和每一个anchor去计算iou
             # .to(device)：将其移动到指定设备上
+            # at shape (na(多少个anchors), nt（目标数量）)
             at = torch.arange(na).view(na, 1).repeat(1, nt).to(device)  # anchor tensor, same as .repeat_interleave(nt)
+            # t[:, 4:6]: 目标的宽高（网格坐标系），shape = (n, 2)
+            # anchors: 当前层的anchor尺寸，shape = (3, 2)
+            # r: 目标宽高与anchor宽高的比值，shape = (3, n, 2)
+            # 这里就对应着提取与anchors比值最大的anchor作为目标框的匹配anchor
+            # t[None, :, 4:6]      # shape = (1, n, 2)，添加维度用于广播
+            # anchors[:, None]     # shape = (3, 1, 2)，添加维度用于广播 None在哪里说明在哪里进行了维度扩展为1
             r = t[None, :, 4:6] / anchors[:, None]  # wh ratio (3, n, 2)  wh是相对于整张图像的归一化坐标，除以anchors后，变成了相对于anchors的归一化坐标
-            j = torch.max(r, 1. / r).max(2)[0] < model.hyp['anchor_t']  # compare
-            # j = wh_iou(anchors, t[:, 4:6]) > model.hyp['iou_t']  # iou(3,n) = wh_iou(anchors(3,2), gwh(n,2))
-            a, t = at[j], t.repeat(na, 1, 1)[j]  # filter
+            # torch.max(r, 1. / r).max(2)返回的是宽宽/高高比中的最大值以及其位置索引。max(2)代表在第2个维度上取最大值，这样整体张量的维度就从（3，n, 2)塌陷到(3, n)
+            # [0]表示取最大值，shape = (3, n)
+            # torch.max(r, 1. / r).max(2)[0] < model.hyp['anchor_t'] 后的shape is （3（na）, n）boolean矩阵
+            j = torch.max(r, 1. / r).max(2)[0] < model.hyp['anchor_t']  # compare 根据上一步中计算高与高的比值，宽与宽的比值，对比阈值，筛选出匹配的 anchor 索引
+            # j = wh_iou(anchors, t[:, 4:6]) > model.hyp['iou_t']  # iou(3,n) = wh_iou(anchors(3,2), gwh(n,2)) # 这里是yolov3时候计算面积占比IOU来筛选匹配的anchor
+            # at[j]：代表从at中筛选出与目标匹配的anchor索引，shape is (M,) 匹配上的anchor数量，使用j进行筛选最后会将j中为True的部分筛选出来，那么j所在的维度就会被压缩掉
+            # t.repeat(na, 1, 1)：将t在第一个维度上重复na次，shape is (na, n, 6（image, class, x, y, w, h）)
+            # t.repeat(na, 1, 1)[j]：代表从t中筛选出与目标匹配的目标信息，shape is (M, 6（image, class, x, y, w, h）)
+            a, t = at[j], t.repeat(na, 1, 1)[j]  # filter  a 是匹配上的 anchor 索引/t 是筛选出来与 anchor 匹配的真实目标信息
 
             # overlaps
-            gxy = t[:, 2:4]  # grid xy
-            z = torch.zeros_like(gxy)
+            gxy = t[:, 2:4]  # grid xy 获取匹配目标框的中心点坐标，shape is (M, 2)
+            z = torch.zeros_like(gxy) # z shape is (M, 2)，全0张量
+            # 如果目标中心点靠近网格边界，将该目标也分配给相邻的网格，增加正样本数量。
             j, k = ((gxy % 1. < g) & (gxy > 1.)).T
             l, m = ((gxy % 1. > (1 - g)) & (gxy < (gain[[2, 3]] - 1.))).T
             a, t = torch.cat((a, a[j], a[k], a[l], a[m]), 0), torch.cat((t, t[j], t[k], t[l], t[m]), 0)
