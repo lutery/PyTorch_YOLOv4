@@ -41,6 +41,9 @@ class FocalLoss(nn.Module):
         self.loss_fcn.reduction = 'none'  # required to apply FL to each element 需要对每个元素单独计算，所以这里强制去掉reduction
 
     def forward(self, pred, true):
+        '''
+        todo 搞清楚这里传递进来的true是啥？
+        '''
         # 计算基础的BCE损失
         loss = self.loss_fcn(pred, true)
         # p_t = torch.exp(-loss)
@@ -103,12 +106,17 @@ def compute_loss(p, targets, model):  # predictions, targets, model
         BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
 
     # Losses
-    nt = 0  # number of targets
-    no = len(p)  # number of outputs
-    balance = [4.0, 1.0, 0.4] if no == 3 else [4.0, 1.0, 0.4, 0.1]  # P3-5 or P3-6
+    nt = 0  # number of targets 有多少个目标
+    no = len(p)  # number of outputs 有多少个输出yolo层
+    # balance用于平衡不同 YOLO 层的目标损失（objectness loss）权重的参数
+    # no: YOLO 输出层的数量
+    # - no == 3: 3个输出层 (P3, P4, P5)，权重 [4.0, 1.0, 0.4]
+    # - no == 4: 4个输出层 (P3, P4, P5, P6)，权重 [4.0, 1.0, 0.4, 0.1]
+    # - no == 5: 5个输出层，权重 [4.0, 1.0, 0.5, 0.4, 0.1]
+    balance = [4.0, 1.0, 0.4] if no == 3 else [4.0, 1.0, 0.4, 0.1]  # P3-5 or P3-6 
     balance = [4.0, 1.0, 0.5, 0.4, 0.1] if no == 5 else balance
     for i, pi in enumerate(p):  # layer index, layer predictions
-        b, a, gj, gi = indices[i]  # image, anchor, gridy, gridx
+        b, a, gj, gi = indices[i]  # image, anchor, gridy, gridx 
         tobj = torch.zeros_like(pi[..., 0], device=device)  # target obj
 
         n = b.shape[0]  # number of targets
