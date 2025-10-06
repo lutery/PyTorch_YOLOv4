@@ -1099,3 +1099,183 @@ tbox = [0.3, 1.2, 5.2, 10.4]
 4. **保持尺寸一致性**：同一目标使用相同 anchor
 
 这是 YOLOv5 相比早期版本的重要改进，显著提升了检测性能！
+# FocalLoss是啥？
+# Focal Loss 详解
+
+Focal Loss 是一种**改进的交叉熵损失函数**，专门用于解决**类别不平衡问题**，特别是在目标检测任务中。
+
+## 1. 问题背景
+
+### 传统 BCE Loss 的问题
+
+```python
+# 在目标检测中
+正样本（有目标）：很少，比如几十个
+负样本（背景）：很多，比如几千个
+
+# 使用传统 BCE Loss
+# - 负样本数量远大于正样本
+# - 即使每个负样本损失很小，总的负样本损失也会主导训练
+# - 导致模型对简单的负样本过度关注，忽略了重要的正样本
+```
+
+## 2. Focal Loss 的核心思想
+
+**降低易分类样本的权重，增加难分类样本的权重。**
+
+```python
+# 传统 BCE Loss
+loss = -[y * log(p) + (1-y) * log(1-p)]
+
+# Focal Loss
+loss = -α * (1-p_t)^γ * [y * log(p) + (1-y) * log(1-p)]
+```
+
+## 3. 代码实现详解
+
+```python
+class FocalLoss(nn.Module):
+    def __init__(self, loss_fcn, gamma=1.5, alpha=0.25):
+        super(FocalLoss, self).__init__()
+        self.loss_fcn = loss_fcn  # 基础损失函数（通常是 BCEWithLogitsLoss）
+        self.gamma = gamma        # 聚焦参数，控制难易样本的权重差异
+        self.alpha = alpha        # 平衡参数，平衡正负样本
+        self.reduction = loss_fcn.reduction
+        self.loss_fcn.reduction = 'none'  # 需要对每个元素单独计算
+
+    def forward(self, pred, true):
+        # 1. 计算基础 BCE 损失
+        loss = self.loss_fcn(pred, true)
+        
+        # 2. 计算预测概率
+        pred_prob = torch.sigmoid(pred)  # 将 logits 转换为概率 [0, 1]
+        
+        # 3. 计算 p_t（正确分类的概率）
+        # 如果 true=1（正样本）：p_t = pred_prob
+        # 如果 true=0（负样本）：p_t = 1 - pred_prob
+        p_t = true * pred_prob + (1 - true) * (1 - pred_prob)
+        
+        # 4. 计算 alpha 因子
+        # 正样本使用 alpha，负样本使用 1-alpha
+        alpha_factor = true * self.alpha + (1 - true) * (1 - self.alpha)
+        
+        # 5. 计算调制因子（Focal Loss 的核心）
+        # (1 - p_t)^gamma：p_t 越大（越容易分类），权重越小
+        modulating_factor = (1.0 - p_t) ** self.gamma
+        
+        # 6. 最终损失
+        loss *= alpha_factor * modulating_factor
+        
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        else:
+            return loss
+```
+
+## 4. 关键参数说明
+
+### gamma（γ）：聚焦参数
+
+```python
+# gamma = 0：退化为标准 BCE Loss
+# gamma = 1.5（常用）：中等聚焦
+# gamma = 2（常用）：较强聚焦
+# gamma = 5：很强聚焦
+
+# 效果示例（gamma=2）：
+p_t = 0.9（易分类样本）
+(1 - p_t)^2 = 0.01  # 权重很小，几乎忽略
+
+p_t = 0.5（难分类样本）
+(1 - p_t)^2 = 0.25  # 权重较大
+
+p_t = 0.1（很难分类样本）
+(1 - p_t)^2 = 0.81  # 权重很大，重点关注
+```
+
+### alpha（α）：平衡参数
+
+```python
+# alpha = 0.25（常用）：正样本权重 0.25，负样本权重 0.75
+# alpha = 0.5：不平衡正负样本
+# alpha = 0.75：正样本权重更大
+
+# 在 YOLO 中通常设置较小的 alpha
+# 因为负样本（背景）数量远多于正样本
+```
+
+## 5. 实际效果对比
+
+```python
+# 假设有 100 个样本
+# - 90 个负样本（背景），都很容易分类，p_t=0.95
+# - 10 个正样本（目标），有的难分类，p_t=0.6
+
+# === 使用传统 BCE Loss ===
+# 负样本总损失 = 90 * 0.05 = 4.5
+# 正样本总损失 = 10 * 0.4 = 4.0
+# 负样本主导训练 ❌
+
+# === 使用 Focal Loss (gamma=2, alpha=0.25) ===
+# 负样本：(1-0.95)^2 = 0.0025，权重很小
+# 负样本总损失 ≈ 90 * 0.0025 * 0.75 * 0.05 ≈ 0.008
+# 
+# 正样本：(1-0.6)^2 = 0.16，权重较大
+# 正样本总损失 ≈ 10 * 0.16 * 0.25 * 0.4 ≈ 0.16
+# 正样本主导训练 ✓
+```
+
+## 6. 在 YOLO 中的使用
+
+```python
+# 在 compute_loss 中
+g = h['fl_gamma']  # 从超参数中获取 gamma
+if g > 0:
+    # 包装分类损失和目标损失
+    BCEcls = FocalLoss(BCEcls, g)  # 分类损失
+    BCEobj = FocalLoss(BCEobj, g)  # 目标损失
+
+# 如果 fl_gamma = 0，则不使用 Focal Loss
+# 如果 fl_gamma > 0（如 1.5），则使用 Focal Loss
+```
+
+### 配置示例
+
+```python
+# 超参数配置
+hyp = {
+    'fl_gamma': 0.0,  # 默认不使用 Focal Loss
+    # 或
+    'fl_gamma': 1.5,  # 使用 Focal Loss，gamma=1.5
+}
+```
+
+## 7. 优势总结
+
+1. **解决类别不平衡**
+   - 自动降低易分类样本的权重
+   - 让模型关注难分类样本
+
+2. **提高检测质量**
+   - 减少简单背景的干扰
+   - 提升对小目标、遮挡目标的检测能力
+
+3. **无需手动采样**
+   - 不需要手动平衡正负样本
+   - 通过损失函数自动调节
+
+4. **广泛应用**
+   - RetinaNet（首次提出）
+   - YOLO 系列
+   - 各种目标检测模型
+
+## 8. 参考论文
+
+**Focal Loss for Dense Object Detection**
+- 作者：Tsung-Yi Lin et al. (Facebook AI Research)
+- 发表于：ICCV 2017
+- arXiv: https://arxiv.org/abs/1708.02002
+
+这篇论文提出了 Focal Loss 和 RetinaNet 检测器，是目标检测领域的重要工作！

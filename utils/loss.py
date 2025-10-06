@@ -31,24 +31,39 @@ class BCEBlurWithLogitsLoss(nn.Module):
 
 class FocalLoss(nn.Module):
     # Wraps focal loss around existing loss_fcn(), i.e. criteria = FocalLoss(nn.BCEWithLogitsLoss(), gamma=1.5)
+    # Focal Loss 是一种改进的交叉熵损失函数，专门用于解决类别不平衡问题，特别是在目标检测任务中。
     def __init__(self, loss_fcn, gamma=1.5, alpha=0.25):
         super(FocalLoss, self).__init__()
-        self.loss_fcn = loss_fcn  # must be nn.BCEWithLogitsLoss()
-        self.gamma = gamma
-        self.alpha = alpha
-        self.reduction = loss_fcn.reduction
-        self.loss_fcn.reduction = 'none'  # required to apply FL to each element
+        self.loss_fcn = loss_fcn  # must be nn.BCEWithLogitsLoss() 基础损失函数
+        self.gamma = gamma # 聚焦参数，控制难易样本的权重差异
+        self.alpha = alpha # 平衡参数，控制正负样本的权重比例
+        self.reduction = loss_fcn.reduction # 保留基础损失函数的reduction方式
+        self.loss_fcn.reduction = 'none'  # required to apply FL to each element 需要对每个元素单独计算，所以这里强制去掉reduction
 
     def forward(self, pred, true):
+        # 计算基础的BCE损失
         loss = self.loss_fcn(pred, true)
         # p_t = torch.exp(-loss)
         # loss *= self.alpha * (1.000001 - p_t) ** self.gamma  # non-zero power for gradient stability
 
         # TF implementation https://github.com/tensorflow/addons/blob/v0.7.1/tensorflow_addons/losses/focal_loss.py
-        pred_prob = torch.sigmoid(pred)  # prob from logits
+        # 计算预测概率
+        pred_prob = torch.sigmoid(pred)  # prob from logits # 将 logits 转换为概率 [0, 1]
+        
+        # 3. 计算 p_t（正确分类的概率）
+        # 如果 true=1（正样本）：p_t = pred_prob
+        # 如果 true=0（负样本）：p_t = 1 - pred_prob
         p_t = true * pred_prob + (1 - true) * (1 - pred_prob)
+
+        # 4. 计算 alpha 因子
+        # 正样本使用 alpha，负样本使用 1-alpha
         alpha_factor = true * self.alpha + (1 - true) * (1 - self.alpha)
+
+        # 5. 计算调制因子（Focal Loss 的核心）
+        # (1 - p_t)^gamma：p_t 越大（越容易分类），权重越小
         modulating_factor = (1.0 - p_t) ** self.gamma
+
+        # # 6. 最终损失
         loss *= alpha_factor * modulating_factor
 
         if self.reduction == 'mean':
@@ -69,14 +84,17 @@ def compute_loss(p, targets, model):  # predictions, targets, model
     #print(device)
     # todo 这几个的作用
     lcls, lbox, lobj = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device) 
-    tcls, tbox, indices, anchors = build_targets(p, targets, model)  # targets
+    tcls, tbox, indices, anchors = build_targets(p, targets, model)  # targets 筛选与目标框匹配的anchors，扩展正样本
     h = model.hyp  # hyperparameters
 
-    # Define criteria
+    # Define criteria 定于分类损失和目标损失
     BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.Tensor([h['cls_pw']])).to(device)
     BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.Tensor([h['obj_pw']])).to(device)
 
     # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
+    # 标签平滑，防止过拟合，避免硬编码导致过于自信
+    # 但是这里没有使用，传入的是0.0
+    # cp=1.0, cn=0.0是传统的one-hot编码
     cp, cn = smooth_BCE(eps=0.0)
 
     # Focal loss
