@@ -80,6 +80,8 @@ class FocalLoss(nn.Module):
 def compute_loss(p, targets, model):  # predictions, targets, model
     '''
     p:  这里pred是一个list，包含三个yolo层的输出， 每一层的shape=(bs, 3, 13, 13, 85)  # (bs, anchors, grid, grid, classes + xywh)
+    # 85 = [x, y, w, h, obj, cls0, cls1, ..., cls79]
+#      [0, 1, 2, 3,  4,    5,    6,   ..., 84   ]   
     targets: targets.shape = [N, 6]，其中6=(image, class, x, y, w, h)
     model: model
     '''
@@ -87,7 +89,7 @@ def compute_loss(p, targets, model):  # predictions, targets, model
     #print(device)
     # todo 这几个的作用
     lcls, lbox, lobj = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device) 
-    tcls, tbox, indices, anchors = build_targets(p, targets, model)  # targets 筛选与目标框匹配的anchors，扩展正样本
+    tcls, tbox, indices, anchors = build_targets(p, targets, model)  # targets 筛选与目标框匹配的anchors，扩展正样本，同时也是判断有多少个目标匹配
     h = model.hyp  # hyperparameters
 
     # Define criteria 定于分类损失和目标损失
@@ -117,17 +119,24 @@ def compute_loss(p, targets, model):  # predictions, targets, model
     balance = [4.0, 1.0, 0.5, 0.4, 0.1] if no == 5 else balance
     for i, pi in enumerate(p):  # layer index, layer predictions
         b, a, gj, gi = indices[i]  # image, anchor, gridy, gridx 
-        tobj = torch.zeros_like(pi[..., 0], device=device)  # target obj
+        # 创建一个shape与pi[..., 0]相同的张量，用于存储每个位置的目标置信度标签，shape = (bs, anchors, grid_h, grid_w)，初始值为0（表示所有位置都是背景）。对于有目标的位置，会被设置为1或IoU值。
+        tobj = torch.zeros_like(pi[..., 0], device=device)  # target obj 
 
-        n = b.shape[0]  # number of targets
+        n = b.shape[0]  # number of targets 获取当前yolo层中匹配到的目标数量，即有多少个目标与该层的anchor匹配成功。这个值用于后续计算损失时的权重调整和统计信息。
         if n:
             nt += n  # cumulative targets
-            ps = pi[b, a, gj, gi]  # prediction subset corresponding to targets
+            ps = pi[b, a, gj, gi]  # prediction subset corresponding to targets 根据索引获取到当前yolo层中与目标匹配的预测值，shape = (n, classes + xywh)，其中n是匹配到的目标数量。这个子集包含了所有与目标匹配的预测值，用于后续计算损失。
 
             # Regression
-            pxy = ps[:, :2].sigmoid() * 2. - 0.5
-            pwh = (ps[:, 2:4].sigmoid() * 2) ** 2 * anchors[i]
-            pbox = torch.cat((pxy, pwh), 1).to(device)  # predicted box
+            pxy = ps[:, :2].sigmoid() * 2. - 0.5 # sigmoid函数将预测的中心坐标限制在0到1之间，然后通过乘以2和减去0.5将其调整到-0.5到1.5之间。这是为了让模型能够预测出中心坐标在网格单元内的相对位置，允许一定的偏移。 这个调整使得模型能够更灵活地预测目标的位置，尤其是在目标接近网格边界时。通过这种方式，模型可以更好地适应不同大小和位置的目标，提高检测的准确性。
+            # ps[:, 2:4] 提取宽高的原始预测值（logits）
+            # .sigmoid() - 归一化到 [0, 1]
+            # * 2 - 扩展到 [0, 2] todo 为啥？
+            # ** 2 - 平方操作？todo 将范围从 (0, 2) 扩展到 (0, 4)，使得预测值分布更加合理（小值更小，大值更大）
+            #  anchors[i] - 乘以 anchor 尺寸，将相对于 anchor 的预测值转换为网格坐标系下的实际宽高 这里得到的宽高时基于当前yolo层的大小的宽高 todo 再次确认一下
+            # 以下时yolov5的做法，而不是yolov4原始的
+            pwh = (ps[:, 2:4].sigmoid() * 2) ** 2 * anchors[i] 
+            pbox = torch.cat((pxy, pwh), 1).to(device)  # predicted box 组合得到预测的目标
             iou = bbox_iou(pbox.T, tbox[i], x1y1x2y2=False, CIoU=True)  # iou(prediction, target)
             lbox += (1.0 - iou).mean()  # iou loss
 
@@ -279,9 +288,9 @@ def build_targets(p, targets, model):
         tcls.append(c)  # class 提取目标类别，shape = (M,)
 
     # 返回所有yolo层的目标信息
-    # tcls： list of (M,)  每个元素是一个张量，包含该层所有匹配目标的类别索引
-    # tbox： list of (M, 4) 每个元素是一个张量，包含该层所有匹配目标的边界框，格式为 [相对x, 相对y, w, h]
-    # indices： list of (b, a, gj, gi) 每个元素是一个元组，包含该层所有匹配目标的图片索引、anchor索引、网格y索引和网格x索引
-    # anch： list of (M, 2) 每个元素是一个张量，包含该层所有匹配目标的anchor尺寸，格式为 [anchor_w, anchor_h]
+    # tcls： list of (M,)  每个元素是一个张量，包含该每个yolo层所有匹配目标的类别索引
+    # tbox： list of (M, 4) 每个元素是一个张量，包含每个yolo层所有匹配目标的边界框，格式为 [相对x, 相对y, w, h]
+    # indices： list of (b, a, gj, gi) 每个元素是一个元组，包含每个yolo层所有匹配目标的图片索引、anchor索引、网格y索引和网格x索引
+    # anch： list of (M, 2) 每个元素是一个张量，包含每个yolo层所有匹配目标的anchor尺寸，格式为 [anchor_w, anchor_h]
     # todo，后续要查看损失如何计算相同anchor去计算匹配不同中心点的目标
     return tcls, tbox, indices, anch

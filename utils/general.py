@@ -219,10 +219,17 @@ def clip_coords(boxes, img_shape):
 
 
 def bbox_iou(box1, box2, x1y1x2y2=True, GIoU=False, DIoU=False, CIoU=False, EIoU=False, ECIoU=False, eps=1e-9):
+    '''
+    计算两个边界框之间的IoU（交并比）。box1是一个4维的边界框，box2是一个nx4维的边界框。
+    参数说明：
+    传参示例：pbox.T, tbox[i], x1y1x2y2=False, CIoU=True
+    '''
     # Returns the IoU of box1 to box2. box1 is 4, box2 is nx4
     box2 = box2.T
 
     # Get the coordinates of bounding boxes
+    # 这里是根据传递的参数坐标形式计算两个预测框的左上角和右下角的坐标
+    # 将坐标统一转换为 左上角和右下角的坐标形式（x1, y1, x2, y2）
     if x1y1x2y2:  # x1, y1, x2, y2 = box1
         b1_x1, b1_y1, b1_x2, b1_y2 = box1[0], box1[1], box1[2], box1[3]
         b2_x1, b2_y1, b2_x2, b2_y2 = box2[0], box2[1], box2[2], box2[3]
@@ -232,7 +239,8 @@ def bbox_iou(box1, box2, x1y1x2y2=True, GIoU=False, DIoU=False, CIoU=False, EIoU
         b2_x1, b2_x2 = box2[0] - box2[2] / 2, box2[0] + box2[2] / 2
         b2_y1, b2_y2 = box2[1] - box2[3] / 2, box2[1] + box2[3] / 2
 
-    # Intersection area
+    # Intersection area 计算两个边界框的交集面积。通过计算两个边界框的重叠区域的宽度和高度来得到交集面积。
+    # 这里使用了torch.min和torch.max来计算重叠区域的坐标，并使用clamp(0)来确保重叠区域的宽度和高度不为负数。最后通过相乘得到交集面积。
     inter = (torch.min(b1_x2, b2_x2) - torch.max(b1_x1, b2_x1)).clamp(0) * \
             (torch.min(b1_y2, b2_y2) - torch.max(b1_y1, b2_y1)).clamp(0)
 
