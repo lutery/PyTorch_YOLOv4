@@ -257,24 +257,29 @@ def bbox_iou(box1, box2, x1y1x2y2=True, GIoU=False, DIoU=False, CIoU=False, EIoU
         cw = torch.max(b1_x2, b2_x2) - torch.min(b1_x1, b2_x1)  # convex (smallest enclosing box) width
         ch = torch.max(b1_y2, b2_y2) - torch.min(b1_y1, b2_y1)  # convex height
         if CIoU or DIoU or EIoU or ECIoU:  # Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
-            # todo 这是在计算什么？
+            # todo 这是在计算什么？数学原理？
             c2 = cw ** 2 + ch ** 2 + eps  # convex diagonal squared
+            # todo 这里计算什么？数学原理？
             rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2) ** 2 +
                     (b2_y1 + b2_y2 - b1_y1 - b1_y2) ** 2) / 4  # center distance squared
             if DIoU:
+                # DIoU 是在计算什么？数学原理？
                 return iou - rho2 / c2  # DIoU
             elif CIoU:  # https://github.com/Zzh-tju/DIoU-SSD-pytorch/blob/master/utils/box/box_utils.py#L47
+                # CIoU 是在计算什么？数学原理？
                 v = (4 / math.pi ** 2) * torch.pow(torch.atan(w2 / h2) - torch.atan(w1 / h1), 2)
                 with torch.no_grad():
                     alpha = v / ((1 + eps) - iou + v)
                 return iou - (rho2 / c2 + v * alpha)  # CIoU
             elif EIoU: # Efficient IoU https://arxiv.org/abs/2101.08158
+                # EIoU 是在计算什么？数学原理？
                 rho3 = (w1-w2) **2
                 c3 = cw ** 2 + eps
                 rho4 = (h1-h2) **2
                 c4 = ch ** 2 + eps
                 return iou - rho2 / c2 - rho3 / c3 - rho4 / c4  # EIoU
             elif ECIoU:
+                # ECIoU 是在计算什么？数学原理？
                 v = (4 / math.pi ** 2) * torch.pow(torch.atan(w2 / h2) - torch.atan(w1 / h1), 2)
                 with torch.no_grad():
                     alpha = v / ((1 + eps) - iou + v)
@@ -284,8 +289,9 @@ def bbox_iou(box1, box2, x1y1x2y2=True, GIoU=False, DIoU=False, CIoU=False, EIoU
                 c4 = ch ** 2 + eps
                 return iou - v * alpha - rho2 / c2 - rho3 / c3 - rho4 / c4  # ECIoU
         else:  # GIoU https://arxiv.org/pdf/1902.09630.pdf
-            c_area = cw * ch + eps  # convex area
-            return iou - (c_area - union) / c_area  # GIoU
+            # 
+            c_area = cw * ch + eps  # convex area 计算外接矩形的大小
+            return iou - (c_area - union) / c_area  # todo GIoU 这里是在计算什么？数学原理？
     else:
         return iou  # IoU
 
