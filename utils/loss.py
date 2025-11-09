@@ -120,7 +120,7 @@ def compute_loss(p, targets, model):  # predictions, targets, model
     for i, pi in enumerate(p):  # layer index, layer predictions
         b, a, gj, gi = indices[i]  # image, anchor, gridy, gridx 
         # 创建一个shape与pi[..., 0]相同的张量，用于存储每个位置的目标置信度标签，shape = (bs, anchors, grid_h, grid_w)，初始值为0（表示所有位置都是背景）。对于有目标的位置，会被设置为1或IoU值。
-        tobj = torch.zeros_like(pi[..., 0], device=device)  # target obj 
+        tobj = torch.zeros_like(pi[..., 0], device=device)  # target obj  todo 这个是干啥的？
 
         n = b.shape[0]  # number of targets 获取当前yolo层中匹配到的目标数量，即有多少个目标与该层的anchor匹配成功。这个值用于后续计算损失时的权重调整和统计信息。
         if n:
@@ -137,10 +137,37 @@ def compute_loss(p, targets, model):  # predictions, targets, model
             # 以下时yolov5的做法，而不是yolov4原始的
             pwh = (ps[:, 2:4].sigmoid() * 2) ** 2 * anchors[i] 
             pbox = torch.cat((pxy, pwh), 1).to(device)  # predicted box 组合得到预测的目标
-            iou = bbox_iou(pbox.T, tbox[i], x1y1x2y2=False, CIoU=True)  # iou(prediction, target)
-            lbox += (1.0 - iou).mean()  # iou loss
+            iou = bbox_iou(pbox.T, tbox[i], x1y1x2y2=False, CIoU=True)  # iou(prediction, target) 得到目标框和预测框的Iou值，shape = (n, )
+            lbox += (1.0 - iou).mean()  # iou loss IoU Loss（交并比损失），用于衡量预测框和真实框之间的差异 这里减一也是为了计算最小值，从而得到最重合的区域
 
-            # Objectness
+            # Objectness 设置更新目标置信度标签，使用 IoU 作为软标签，而不是简单的硬标签 0 或 1
+            '''
+            # 定位到有目标的位置
+            # b: 图片索引，shape = (n,)
+            # a: anchor 索引，shape = (n,)
+            # gj: 网格 y 坐标，shape = (n,)
+            # gi: 网格 x 坐标，shape = (n,)
+
+            # 例如：
+            b = [0, 0, 1]  # 图片0有2个目标，图片1有1个目标
+            a = [1, 2, 0]  # 使用的 anchor 索引
+            gj = [7, 8, 5]  # 网格 y 坐标
+            gi = [13, 9, 11]  # 网格 x 坐标
+
+            # tobj[b, a, gj, gi] 会定位到这3个位置
+            '''
+
+            '''
+            model.gr 
+            # model.gr 是 IoU ratio（IoU 比率）
+            # 在 train.py 中设置：
+            model.gr = 1.0  # iou loss ratio (obj_loss = 1.0 or iou)
+
+            # 含义：
+            # gr = 1.0: 完全使用 IoU 作为目标置信度标签（软标签）
+            # gr = 0.0: 使用 1.0 作为目标置信度标签（硬标签）
+            # gr = 0.5: 混合使用，50% IoU + 50% 硬标签
+            '''
             tobj[b, a, gj, gi] = (1.0 - model.gr) + model.gr * iou.detach().clamp(0).type(tobj.dtype)  # iou ratio
 
             # Classification

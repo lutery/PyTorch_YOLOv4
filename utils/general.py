@@ -257,41 +257,68 @@ def bbox_iou(box1, box2, x1y1x2y2=True, GIoU=False, DIoU=False, CIoU=False, EIoU
         cw = torch.max(b1_x2, b2_x2) - torch.min(b1_x1, b2_x1)  # convex (smallest enclosing box) width
         ch = torch.max(b1_y2, b2_y2) - torch.min(b1_y1, b2_y1)  # convex height
         if CIoU or DIoU or EIoU or ECIoU:  # Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
-            # todo 这是在计算什么？数学原理？
+            # 这是在计算什么？数学原理？
+            # 计算最小外接矩形的对角线平方
             c2 = cw ** 2 + ch ** 2 + eps  # convex diagonal squared
-            # todo 这里计算什么？数学原理？
+            # 这里计算什么？数学原理？
+            # 计算两个边界框中心点之间的欧氏距离的平方
             rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2) ** 2 +
                     (b2_y1 + b2_y2 - b1_y1 - b1_y2) ** 2) / 4  # center distance squared
             if DIoU:
                 # DIoU 是在计算什么？数学原理？
+                # IoU: 标准交并比，后面一项是对中心点距离的惩罚
+                '''
+                考虑中心点距离：即使 IoU 相同，中心点越近，DIoU 越大
+                收敛更快：提供了明确的优化方向（让中心点靠近） 
+                非重叠情况：即使两个框不重叠，也能提供有意义的梯度
+                '''
                 return iou - rho2 / c2  # DIoU
             elif CIoU:  # https://github.com/Zzh-tju/DIoU-SSD-pytorch/blob/master/utils/box/box_utils.py#L47
                 # CIoU 是在计算什么？数学原理？
+                # 对比DIou增加了宽高比的一致性度量和权重系数（动态调整）
+                # 衡量两个框的宽高比是否一致
                 v = (4 / math.pi ** 2) * torch.pow(torch.atan(w2 / h2) - torch.atan(w1 / h1), 2)
                 with torch.no_grad():
+                    # 根据 IoU 和 v 动态调整宽高比项的权重
+                    # # 当 IoU 很大时（框重叠度高）/ # 权重较大，更关注宽高比
+                    # # 当 IoU 很小时（框重叠度低）
+                    # # 权重较小，先关注位置和大小
                     alpha = v / ((1 + eps) - iou + v)
                 return iou - (rho2 / c2 + v * alpha)  # CIoU
             elif EIoU: # Efficient IoU https://arxiv.org/abs/2101.08158
                 # EIoU 是在计算什么？数学原理？
-                rho3 = (w1-w2) **2
-                c3 = cw ** 2 + eps
-                rho4 = (h1-h2) **2
-                c4 = ch ** 2 + eps
+                rho3 = (w1-w2) **2  # 宽度差的平方
+                c3 = cw ** 2 + eps  # 外接矩形宽度的平方
+                rho4 = (h1-h2) **2 # 高度差的平方
+                c4 = ch ** 2 + eps # 外接矩形高度的平方
+                # # CIoU 的问题：
+                # 使用 arctan 来衡量宽高比，计算复杂，收敛慢
+                # # EIoU 的改进：
+                # 直接惩罚宽度差异和高度差异
                 return iou - rho2 / c2 - rho3 / c3 - rho4 / c4  # EIoU
             elif ECIoU:
                 # ECIoU 是在计算什么？数学原理？
                 v = (4 / math.pi ** 2) * torch.pow(torch.atan(w2 / h2) - torch.atan(w1 / h1), 2)
                 with torch.no_grad():
                     alpha = v / ((1 + eps) - iou + v)
-                rho3 = (w1-w2) **2
-                c3 = cw ** 2 + eps
-                rho4 = (h1-h2) **2
-                c4 = ch ** 2 + eps
+                rho3 = (w1-w2) **2 # 宽度差的平方
+                c3 = cw ** 2 + eps # 外接矩形宽度的平方
+                rho4 = (h1-h2) **2 # 高度差的平方
+                c4 = ch ** 2 + eps # 外接矩形高度的平方
                 return iou - v * alpha - rho2 / c2 - rho3 / c3 - rho4 / c4  # ECIoU
         else:  # GIoU https://arxiv.org/pdf/1902.09630.pdf
             # 
             c_area = cw * ch + eps  # convex area 计算外接矩形的大小
-            return iou - (c_area - union) / c_area  # todo GIoU 这里是在计算什么？数学原理？
+            '''
+            C: 外接矩形面积
+            U: 两个框的并集面积（斜线区域）
+            C - U: 灰色区域（外接矩形中的空白部分）
+
+            GIoU惩罚项: (C - U) / C
+            - 两个框越接近，C-U 越小，惩罚越小
+            - 两个框越分散，C-U 越大，惩罚越大
+            '''
+            return iou - (c_area - union) / c_area  # GIoU 这里是在计算什么？数学原理？
     else:
         return iou  # IoU
 
