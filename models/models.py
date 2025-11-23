@@ -547,7 +547,7 @@ class YOLOLayer(nn.Module):
             # 通过以下计算得到实际的宽高值（还是需要结合下采样倍数进行还原，即乘以stride）
             # todo 还是需要实际的调试感受
             io[..., 2:4] = (io[..., 2:4] * 2) ** 2 * self.anchor_wh
-            # 这一步是将预测框的坐标和宽高值进行缩放，得到实际的坐标和宽高值
+            # 这一步是将预测框的坐标和宽高值进行缩放，得到实际的坐标和宽高值,即将预测的结果恢复回相对原图的尺寸，根据下采样的倍率
             # 这里的 stride 是当前 YOLO 层的下采样倍数
             io[..., :4] *= self.stride
             #io = p.clone()  # inference output
@@ -677,6 +677,8 @@ class Darknet(nn.Module):
         x: 图片的tensor数据 batch_size, 3, height, width
         augment: 是否进行增强 
         verbose: 是否打印每一层的输出
+
+        return 返回预测后的检测框，坐标尺寸都是相对于原图
         '''
 
         if not augment:
@@ -684,14 +686,24 @@ class Darknet(nn.Module):
         else:  # Augment images (inference and test only) https://github.com/ultralytics/yolov3/issues/931
             img_size = x.shape[-2:]  # height, width
             s = [0.83, 0.67]  # scales
-            y = []
-            for i, xi in enumerate((x,
+            y = [] # 存储增强后预测的yolo层的输出结果
+            # 下面的操作就是对图片进行增强操作，有缩放，翻转
+            # 这里的x仅一个批次，没有多个批次，所以这里仅回for 3次，所以y才只有3个
+            for i, xi in enumerate((x, # 不进行处理
                                     torch_utils.scale_img(x.flip(3), s[0], same_shape=False),  # flip-lr and scale
                                     torch_utils.scale_img(x, s[1], same_shape=False),  # scale
                                     )):
                 # cv2.imwrite('img%g.jpg' % i, 255 * xi[0].numpy().transpose((1, 2, 0))[:, :, ::-1])
+                # self.forward_once(xi)[0]：因为返回的是一个元组，所以这里仅获取预测的结果
+                '''
+                # - batch_size: 批次大小（如果没有在 forward_once 内部增强，则为原始 batch_size）
+                # - total_predictions: 所有 YOLO 层的预测框总数
+                #   例如: P3(52×52×3) + P4(26×26×3) + P5(13×13×3) = 8112 + 2028 + 507 = 10647
+                # - 85: [x, y, w, h, obj, cls0, cls1, ..., cls79]
+                '''
                 y.append(self.forward_once(xi)[0])
 
+            # 因为预测的是缩放、翻转的图片，所以这里需要将预测的结果重新在翻转、缩放回来
             y[1][..., :4] /= s[0]  # scale
             y[1][..., 0] = img_size[1] - y[1][..., 0]  # flip lr
             y[2][..., :4] /= s[1]  # scale

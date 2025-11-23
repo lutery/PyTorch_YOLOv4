@@ -92,7 +92,7 @@ def compute_loss(p, targets, model):  # predictions, targets, model
     tcls, tbox, indices, anchors = build_targets(p, targets, model)  # targets 筛选与目标框匹配的anchors，扩展正样本，同时也是判断有多少个目标匹配
     h = model.hyp  # hyperparameters
 
-    # Define criteria 定于分类损失和目标损失
+    # Define criteria 定于分类损失和目标损失 因为yolov4的分类损失是每个类别独立，所以使用BCE分别计算sigmoid得到一个二分类结果，即是或者否，有可能一个目标属于多个分类
     BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.Tensor([h['cls_pw']])).to(device)
     BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.Tensor([h['obj_pw']])).to(device)
 
@@ -170,25 +170,39 @@ def compute_loss(p, targets, model):  # predictions, targets, model
             '''
             tobj[b, a, gj, gi] = (1.0 - model.gr) + model.gr * iou.detach().clamp(0).type(tobj.dtype)  # iou ratio
 
-            # Classification
+            # Classification 如果有多余两个类别的目标检测，则还需要计算分类误差
             if model.nc > 1:  # cls loss (only if multiple classes)
-                t = torch.full_like(ps[:, 5:], cn, device=device)  # targets
+                # ps[:, 5:]就是获取类别预测的结果 cn是一个全0的值
+                t = torch.full_like(ps[:, 5:], cn, device=device)  # targets 构建一个全0的和检测框矩阵相同尺寸的矩阵
+                # tcls就是被筛选出来的目标类别，也就是和anchor相近的目标检测框 todo 研究起shape
+                # 然后将这些类别的位置设置上1
                 t[range(n), tcls[i]] = cp
-                lcls += BCEcls(ps[:, 5:], t)  # BCE
+                lcls += BCEcls(ps[:, 5:], t)  # BCE 用BCE分类损失
 
             # Append targets to text file
             # with open('targets.txt', 'a') as file:
             #     [file.write('%11.5g ' * 4 % tuple(x) + '\n') for x in torch.cat((txy[i], twh[i]), 1)]
 
+        # 计算目标置信度损失，置信度和IOU有关系，和目标的越近则置信度越高
+        # balance[i] 用于平衡不同层的损失，因为不同层的预测框数量差异大
         lobj += BCEobj(pi[..., 4], tobj) * balance[i]  # obj loss
 
-    s = 3 / no  # output count scaling
-    lbox *= h['box'] * s
-    lobj *= h['obj'] * s * (1.4 if no >= 4 else 1.)
-    lcls *= h['cls'] * s
+    # 以下都是超参数对损失进行处理
+    s = 3 / no  # output count scaling # 输出层数量的缩放因子 s 是一个归一化因子，用于平衡不同数量YOLO层的总损失
+    # 如果不尽兴缩放，那么层数越多，总损失越大，那么超参数也要跟着调整，无法通用，梯度量级不一致，学习率也要调整，造成不同模型的损失无法比较通用
+    lbox *= h['box'] * s # 边界框损失权重
+    lobj *= h['obj'] * s * (1.4 if no >= 4 else 1.)  # 目标损失权重； 层数越多，正负样本不平衡越严重；需要提高 lobj 的权重，让模型更关注目标检测
+    lcls *= h['cls'] * s # 分类损失权重
     bs = tobj.shape[0]  # batch size
 
+    # 为什么lobj权重最大？
+    # - 目标检测的首要任务是找到目标
+    # - 找不到目标，分类和定位都没有意义
+    # - 所以目标置信度损失最重要
+    
+    # 计算总损失
     loss = lbox + lobj + lcls
+    # loss * bs 看md，主要是学习效率的问题
     return loss * bs, torch.cat((lbox, lobj, lcls, loss)).detach()
 
 
