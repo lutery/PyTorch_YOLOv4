@@ -110,7 +110,16 @@ def output_to_target(output, width, height):
 
 def plot_images(images, targets, paths=None, fname='images.jpg', names=None, max_size=640, max_subplots=16):
     # Plot image grid with labels
+    # 参数：
+    # images: 图像张量，shape = (batch_size, 3, H, W)
+    # targets: 目标标签，shape = (n_targets, 6) [img_idx, class, x, y, w, h]
+    # paths: 图像路径列表
+    # fname: 保存文件名
+    # names: 类别名称列表
+    # max_size: 最大图像尺寸（用于缩放）
+    # max_subplots: 最多显示多少张图
 
+    # 将图片、标签迁移到cpu并转换为numpy，方便操作
     if isinstance(images, torch.Tensor):
         images = images.cpu().float().numpy()
     if isinstance(targets, torch.Tensor):

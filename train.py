@@ -472,7 +472,7 @@ YOLOv4 采用余弦退火学习率调度器，是为了让训练过程更平滑�
                 # mloss = sum_loss / (i + 1)  # 除以总batch数
                 # 总感觉可以优化，没必要每次都mloss * i todo
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses 计算平均损失
-                # 监控显存的占用
+                # 监控显存的占用，具体看md文档
                 mem = '%.3gG' % (torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
                 s = ('%10s' * 2 + '%10.4g' * 6) % (
                     '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs.shape[-1])
@@ -480,12 +480,14 @@ YOLOv4 采用余弦退火学习率调度器，是为了让训练过程更平滑�
 
                 # Plot
                 if plots and ni < 3:
+                    # 这里仅绘制前3个batch的图片合照到文件中，主要展示图片增强效果、确认数据标签是否正确、避免io图片占用资源
                     f = save_dir / f'train_batch{ni}.jpg'  # filename
                     plot_images(images=imgs, targets=targets, paths=paths, fname=f)
                     # if tb_writer:
                     #     tb_writer.add_image(f, result, dataformats='HWC', global_step=epoch)
                     #     tb_writer.add_graph(model, imgs)  # add model to tensorboard
                 elif plots and ni == 3 and wandb:
+                    # 这里是将前3个batch的合照一次性上传到wandb中，方便查看
                     wandb.log({"Mosaics": [wandb.Image(str(x), caption=x.name) for x in save_dir.glob('train*.jpg')]})
 
             # end batch ------------------------------------------------------------------------------------------------
