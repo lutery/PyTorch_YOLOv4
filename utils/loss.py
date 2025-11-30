@@ -84,6 +84,8 @@ def compute_loss(p, targets, model):  # predictions, targets, model
 #      [0, 1, 2, 3,  4,    5,    6,   ..., 84   ]   
     targets: targets.shape = [N, 6]，其中6=(image, class, x, y, w, h)
     model: model
+
+    return 总损失，（边界框损失，目标损失，分类损失，总损失）
     '''
     device = targets.device
     #print(device)

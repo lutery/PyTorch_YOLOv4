@@ -319,7 +319,7 @@ YOLOv4 采用余弦退火学习率调度器，是为了让训练过程更平滑�
     maps = np.zeros(nc)  # mAP per class 创建一个空的map，用来存储每个样本的mAP
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
     scheduler.last_epoch = start_epoch - 1  # do not move 计算其实的epoch
-    scaler = amp.GradScaler(enabled=cuda)
+    scaler = amp.GradScaler(enabled=cuda) # todo
     logger.info('Image sizes %g train, %g test\n'
                 'Using %g dataloader workers\nLogging results to %s\n'
                 'Starting training for %g epochs...' % (imgsz, imgsz_test, dataloader.num_workers, save_dir, epochs))
@@ -434,26 +434,49 @@ YOLOv4 采用余弦退火学习率调度器，是为了让训练过程更平滑�
                 pred = model(imgs)  # forward  # 部分使用 float16，部分使用 float32 这里pred是一个list，包含三个yolo层的输出
                 loss, loss_items = compute_loss(pred, targets.to(device), model)  # loss scaled by batch_size # 自动选择精度
                 if rank != -1:
-                    loss *= opt.world_size  # gradient averaged between devices in DDP mode
+                    '''
+                    # 单GPU训练或CPU训练
+                    rank = -1  # 默认值，表示非分布式模式
 
-            # Backward
+                    # 分布式训练（DDP模式）
+                    # 假设使用4个GPU训练
+                    rank = 0  # 主进程（rank 0），通常在第1个GPU上
+                    rank = 1  # 第2个进程，在第2个GPU上
+                    rank = 2  # 第3个进程，在第3个GPU上
+                    rank = 3  # 第4个进程，在第4个GPU上
+                    '''
+                    loss *= opt.world_size  # gradient averaged between devices in DDP mode
+                    # 因为采用了DDP的机制，所以获取的损失会被自动平均（除以分布式训练的总进程数），而这里是需要总损失的，所以要乘以world_size
+
+            # Backward 这行代码是 PyTorch 混合精度训练（Mixed Precision Training） 中的关键步骤，用于缩放损失并执行反向传播。
             scaler.scale(loss).backward()
 
             # Optimize
             if ni % accumulate == 0:
+                # 对于显存不高的显卡训练，只有当批次的数量累积到指定的数时，才进行梯度更新
                 scaler.step(optimizer)  # optimizer.step
                 scaler.update()
                 optimizer.zero_grad()
                 if ema:
+                    # 有点像强化学习中的target Model，将训练的模型权重一点一点的更新到目标网络ema中
                     ema.update(model)
 
             # Print
             if rank in [-1, 0]:
-                mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
+                # 只有在主线程才打印信息
+                # mloss: 累积的平均损失
+                # i: 当前是第几个batch（从0开始）
+                # 等价于：
+                # sum_loss = mloss * i  # 之前所有batch的总损失
+                # sum_loss += loss_items  # 加上当前batch的损失
+                # mloss = sum_loss / (i + 1)  # 除以总batch数
+                # 总感觉可以优化，没必要每次都mloss * i todo
+                mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses 计算平均损失
+                # 监控显存的占用
                 mem = '%.3gG' % (torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
                 s = ('%10s' * 2 + '%10.4g' * 6) % (
                     '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs.shape[-1])
-                pbar.set_description(s)
+                pbar.set_description(s) 
 
                 # Plot
                 if plots and ni < 3:
