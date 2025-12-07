@@ -26,8 +26,15 @@ matplotlib.use('Agg')  # for writing to files only
 def color_list():
     # Return first 10 plt colors as (r,g,b) https://stackoverflow.com/questions/51350872/python-from-color-name-to-rgb
     def hex2rgb(h):
+        # 由于h的值是一个十六进制颜色代码的列表（例如ff7f0e），所以这里的
+        # 0、2、4就是为了提取每个颜色通道的两个字符，并将其转换为整数表示的RGB值，例如：
+        # 'ff' -> 255 (红色通道)
+        # '7f' -> 127 (绿色通道)
+        # '0e' -> 14  (蓝色通道)
+        # 最终得到的值：（255, 127, 14）元组
         return tuple(int(h[1 + i:1 + i + 2], 16) for i in (0, 2, 4))
 
+    # 获取matploblib中默认的颜色循环列表：plt.rcParams['axes.prop_cycle'].by_key()['color']
     return [hex2rgb(h) for h in plt.rcParams['axes.prop_cycle'].by_key()['color']]
 
 
@@ -52,6 +59,15 @@ def butter_lowpass_filtfilt(data, cutoff=1500, fs=50000, order=5):
 
 
 def plot_one_box(x, img, color=None, label=None, line_thickness=None):
+    '''
+    绘制单个边界框
+    param x: 边界框坐标，格式为[x1, y1, x2, y2]
+    param img: 待绘制的图像
+    param color: 边界框颜色，默认为随机颜色
+    param label: 边界框标签，默认为None
+    param line_thickness: 边界框线条粗细，默认为None
+    该函数在图像上绘制一个边界框，并可选地添加标签。
+    '''
     # Plots one bounding box on image img
     tl = line_thickness or round(0.002 * (img.shape[0] + img.shape[1]) / 2) + 1  # line/font thickness
     color = color or [random.randint(0, 255) for _ in range(3)]
@@ -112,7 +128,7 @@ def plot_images(images, targets, paths=None, fname='images.jpg', names=None, max
     # Plot image grid with labels
     # 参数：
     # images: 图像张量，shape = (batch_size, 3, H, W)
-    # targets: 目标标签，shape = (n_targets, 6) [img_idx, class, x, y, w, h]
+    # targets: 目标标签，shape = (n_targets, 6) [img_idx（图像索引）, class, x, y, w, h]
     # paths: 图像路径列表
     # fname: 保存文件名
     # names: 类别名称列表
@@ -129,49 +145,59 @@ def plot_images(images, targets, paths=None, fname='images.jpg', names=None, max
     if np.max(images[0]) <= 1:
         images *= 255
 
-    tl = 3  # line thickness
-    tf = max(tl - 1, 1)  # font thickness
-    bs, _, h, w = images.shape  # batch size, _, height, width
-    bs = min(bs, max_subplots)  # limit plot images
-    ns = np.ceil(bs ** 0.5)  # number of subplots (square)
+    # 以下应该都是为了绘图做准备工作的参数
+    tl = 3  # line thickness 线条粗细
+    tf = max(tl - 1, 1)  # font thickness 字体粗细
+    bs, _, h, w = images.shape  # batch size, _, height, width 获取图片的批量大小、高度、宽度
+    bs = min(bs, max_subplots)  # limit plot images 最多显示多少张图，防止图太多撑爆
+    ns = np.ceil(bs ** 0.5)  # number of subplots (square) 子图的行列数，取决于bs的大小，大概是由于正方形排列的关系，所以采用开根号
 
     # Check if we should resize
-    scale_factor = max_size / max(h, w)
+    scale_factor = max_size / max(h, w) # 如果要将图片绘制到固定大小的面板上要缩放的比例
     if scale_factor < 1:
+        # 小于1说明图片尺寸过大，需要缩放
         h = math.ceil(scale_factor * h)
         w = math.ceil(scale_factor * w)
 
-    colors = color_list()  # list of colors
-    mosaic = np.full((int(ns * h), int(ns * w), 3), 255, dtype=np.uint8)  # init
+    colors = color_list()  # list of colors 获取颜色列表，每一个元组代表一种颜色的RGB值，例如(255, 127, 14)
+    mosaic = np.full((int(ns * h), int(ns * w), 3), 255, dtype=np.uint8)  # init 这个看起来是在创建一个能够包含所有图像的网格矩阵
     for i, img in enumerate(images):
         if i == max_subplots:  # if last batch has fewer images than we expect
+            # 如果达到了最大的显示图像则跳出循环
             break
-
+        
+        # 计算处于哪行那列，因为展示图是一个方阵排列的方式
         block_x = int(w * (i // ns))
         block_y = int(h * (i % ns))
 
-        img = img.transpose(1, 2, 0)
+        img = img.transpose(1, 2, 0) # 将图像的通道维度从第一个位置移动到最后一个位置，变成(H, W, 3)的格式，符合OpenCV的要求
         if scale_factor < 1:
+            # 将图片缩小能放到网格中
             img = cv2.resize(img, (w, h))
 
+        # 将图片放到创建的矩阵中的指定位置
         mosaic[block_y:block_y + h, block_x:block_x + w, :] = img
         if len(targets) > 0:
+            # 如果存在目标标签，则绘制边界框
+            # targets[:, 0]： 图像索引，所以==i是筛选出符合当前图片索引的目标
             image_targets = targets[targets[:, 0] == i]
-            boxes = xywh2xyxy(image_targets[:, 2:6]).T
-            classes = image_targets[:, 1].astype('int')
-            labels = image_targets.shape[1] == 6  # labels if no conf column
-            conf = None if labels else image_targets[:, 6]  # check for confidence presence (label vs pred)
+            # todo 这里用T估计是为了后续方便计算，将xyxy的维度转换到第一维
+            boxes = xywh2xyxy(image_targets[:, 2:6]).T # 将坐标转换为左上角和右下角的形式，这里的坐标应管只是比例，相对于左上角
+            classes = image_targets[:, 1].astype('int') # 提取类别索引
+            labels = image_targets.shape[1] == 6  # labels if no conf column 判断标签中是否包含置信度信息，如果只有6个维度则说明没有置信度，此时默认所有的目标框的置信度都是100%
+            conf = None if labels else image_targets[:, 6]  # check for confidence presence (label vs pred) 提取置信度信息
 
-            boxes[[0, 2]] *= w
-            boxes[[0, 2]] += block_x
-            boxes[[1, 3]] *= h
-            boxes[[1, 3]] += block_y
-            for j, box in enumerate(boxes.T):
-                cls = int(classes[j])
-                color = colors[cls % len(colors)]
-                cls = names[cls] if names else cls
-                if labels or conf[j] > 0.25:  # 0.25 conf thresh
-                    label = '%s' % cls if labels else '%s %.1f' % (cls, conf[j])
+            boxes[[0, 2]] *= w # 乘以w和h将比例坐标转换为实际像素坐标（相对于图片左上角）
+            boxes[[0, 2]] += block_x # 加上block_x和block_y将坐标调整到mosaic中的正确位置
+            boxes[[1, 3]] *= h # 同上
+            boxes[[1, 3]] += block_y # 同上
+            # 这里boxes.T的shape应该是还原了，现在是(n, 4)，n是当前图片中的目标数量
+            for j, box in enumerate(boxes.T): # 遍历每一个目标框
+                cls = int(classes[j]) # 获取类别索引
+                color = colors[cls % len(colors)] # 根据类别索引选择颜色，这里用的是取余数的操作
+                cls = names[cls] if names else cls # 如果有传入类别名称（就比如bycycle， man...)，则可以用于将cls的索引转换为字符串
+                if labels or conf[j] > 0.25:  # 0.25 conf thresh 只有置信度高于0.25的才进行转换
+                    label = '%s' % cls if labels else '%s %.1f' % (cls, conf[j]) # 包含类别和置信度信息
                     plot_one_box(box, mosaic, label=label, color=color, line_thickness=tl)
 
         # Draw image filename labels
