@@ -68,17 +68,17 @@ def plot_one_box(x, img, color=None, label=None, line_thickness=None):
     param line_thickness: 边界框线条粗细，默认为None
     该函数在图像上绘制一个边界框，并可选地添加标签。
     '''
-    # Plots one bounding box on image img
+    # Plots one bounding box on image img img.shape[0] + img.shape[1]利用图像的高度和宽度来动态计算线条粗细，这样越大的图像线条就越粗，更加明显
     tl = line_thickness or round(0.002 * (img.shape[0] + img.shape[1]) / 2) + 1  # line/font thickness
     color = color or [random.randint(0, 255) for _ in range(3)]
     c1, c2 = (int(x[0]), int(x[1])), (int(x[2]), int(x[3]))
     cv2.rectangle(img, c1, c2, color, thickness=tl, lineType=cv2.LINE_AA)
     if label:
-        tf = max(tl - 1, 1)  # font thickness
-        t_size = cv2.getTextSize(label, 0, fontScale=tl / 3, thickness=tf)[0]
-        c2 = c1[0] + t_size[0], c1[1] - t_size[1] - 3
-        cv2.rectangle(img, c1, c2, color, -1, cv2.LINE_AA)  # filled
-        cv2.putText(img, label, (c1[0], c1[1] - 2), 0, tl / 3, [225, 255, 255], thickness=tf, lineType=cv2.LINE_AA)
+        tf = max(tl - 1, 1)  # font thickness 
+        t_size = cv2.getTextSize(label, 0, fontScale=tl / 3, thickness=tf)[0] # 计算文本标签的尺寸
+        c2 = c1[0] + t_size[0], c1[1] - t_size[1] - 3 # 计算标签背景框的右下角坐标，首先计算的是标签的宽度（即文字绘制的最右边），然后计算绘制文件的Y坐标，需要比框更高一点
+        cv2.rectangle(img, c1, c2, color, -1, cv2.LINE_AA)  # filled 框住label
+        cv2.putText(img, label, (c1[0], c1[1] - 2), 0, tl / 3, [225, 255, 255], thickness=tf, lineType=cv2.LINE_AA) # 写字
 
 
 def plot_wh_methods():  # from utils.general import *; plot_wh_methods()
@@ -130,7 +130,7 @@ def plot_images(images, targets, paths=None, fname='images.jpg', names=None, max
     # images: 图像张量，shape = (batch_size, 3, H, W)
     # targets: 目标标签，shape = (n_targets, 6) [img_idx（图像索引）, class, x, y, w, h]
     # paths: 图像路径列表
-    # fname: 保存文件名
+    # fname: 保存文件名，如果有传入该参数，那么在绘制玩目标检测效果马赛克图后，会将其保存起来
     # names: 类别名称列表
     # max_size: 最大图像尺寸（用于缩放）
     # max_subplots: 最多显示多少张图
@@ -198,11 +198,12 @@ def plot_images(images, targets, paths=None, fname='images.jpg', names=None, max
                 cls = names[cls] if names else cls # 如果有传入类别名称（就比如bycycle， man...)，则可以用于将cls的索引转换为字符串
                 if labels or conf[j] > 0.25:  # 0.25 conf thresh 只有置信度高于0.25的才进行转换
                     label = '%s' % cls if labels else '%s %.1f' % (cls, conf[j]) # 包含类别和置信度信息
-                    plot_one_box(box, mosaic, label=label, color=color, line_thickness=tl)
+                    plot_one_box(box, mosaic, label=label, color=color, line_thickness=tl) # 绘制边框和label
 
         # Draw image filename labels
         if paths:
-            label = Path(paths[i]).name[:40]  # trim to 40 char
+            # 将图像的路径会知道图上，方便知道原图在哪里
+            label = Path(paths[i]).name[:40]  # trim to 40 char 硬裁剪
             t_size = cv2.getTextSize(label, 0, fontScale=tl / 3, thickness=tf)[0]
             cv2.putText(mosaic, label, (block_x + 5, block_y + t_size[1] + 5), 0, tl / 3, [220, 220, 220], thickness=tf,
                         lineType=cv2.LINE_AA)

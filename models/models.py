@@ -823,8 +823,12 @@ def get_yolo_layers(model):
 
 def load_darknet_weights(self, weights, cutoff=-1):
     # Parses and loads the weights stored in 'weights'
+    '''
+    解析加载darknet版本的权重
+    '''
 
     # Establish cutoffs (load layers between 0 and cutoff. if cutoff = -1 all are loaded)
+    # 这里根据darknet的权重命名规则确认权重的截断点，具体看markdown，总体来说就是方便仅加载骨干模型
     file = Path(weights).name
     if file == 'darknet53.conv.74':
         cutoff = 75
@@ -834,8 +838,9 @@ def load_darknet_weights(self, weights, cutoff=-1):
     # Read weights file
     with open(weights, 'rb') as f:
         # Read Header https://github.com/AlexeyAB/darknet/issues/2914#issuecomment-496675346
-        self.version = np.fromfile(f, dtype=np.int32, count=3)  # (int32) version info: major, minor, revision
-        self.seen = np.fromfile(f, dtype=np.int64, count=1)  # (int64) number of images seen during training
+        # 根据权重文件的结构，从里面加载版本号码以及在训练时使用了图片数量
+        self.version = np.fromfile(f, dtype=np.int32, count=3)  # (int32) version info: major, minor, revision 权重版本号码
+        self.seen = np.fromfile(f, dtype=np.int64, count=1)  # (int64) number of images seen during training 训练图片数量
 
         weights = np.fromfile(f, dtype=np.float32)  # the rest are weights
 

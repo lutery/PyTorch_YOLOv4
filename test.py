@@ -27,7 +27,7 @@ def load_classes(path):
     return list(filter(None, names))  # filter removes empty strings (such as last line)
 
 
-def test(data,
+def test(data, # 测试数据集
          weights=None,
          batch_size=16,
          imgsz=640,
@@ -40,24 +40,24 @@ def test(data,
          model=None,
          dataloader=None,
          save_dir=Path(''),  # for saving images
-         save_txt=False,  # for auto-labelling
+         save_txt=False,  # for auto-labelling 
          save_conf=False,
          plots=True,
          log_imgs=0):  # number of logged images
 
     # Initialize/load model and set device
     training = model is not None
-    if training:  # called by train.py
+    if training:  # called by train.py todo 为啥训练模式只需要获取device
         device = next(model.parameters()).device  # get model device
 
-    else:  # called directly
+    else:  # called directly 如果不是训练模式，那么可能会跳过之前的一些数据准备工作，所以这里会单独的进行一些测试模式需要的数据准备
         set_logging()
         device = select_device(opt.device, batch_size=batch_size)
         save_txt = opt.save_txt  # save *.txt labels
 
-        # Directories
+        # Directories 在测试目录下创建一个最新的目录，通过increment_path返回一个不冲突的路径
         save_dir = Path(increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok))  # increment run
-        (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
+        (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir 如果开启了保存标签，则构建对应的存储目录
 
         # Load model
         model = Darknet(opt.cfg).to(device)
@@ -65,22 +65,24 @@ def test(data,
         # load model
         try:
             ckpt = torch.load(weights[0], map_location=device)  # load checkpoint
+            # model.state_dict()[k].numel() == v.numel() 仅家在参数量匹配的上的权重参数，如果权重形状不匹配的就跳过，这种一半都仅用于微调上，放在这里不合适吧？
             ckpt['model'] = {k: v for k, v in ckpt['model'].items() if model.state_dict()[k].numel() == v.numel()}
             model.load_state_dict(ckpt['model'], strict=False)
         except:
+            # 尝试加载darknet原始权重文件
             load_darknet_weights(model, weights[0])
-        imgsz = check_img_size(imgsz, s=64)  # check img_size
+        imgsz = check_img_size(imgsz, s=64)  # check img_size 确保图片的shape是64的倍数
 
-    # Half
+    # Half 尝试加载半精度模型
     half = device.type != 'cpu'  # half precision only supported on CUDA
     if half:
         model.half()
 
     # Configure
-    model.eval()
-    is_coco = data.endswith('coco.yaml')  # is COCO dataset
+    model.eval() # 进入验证模式
+    is_coco = data.endswith('coco.yaml')  # is COCO dataset 判断加载的数据集是否是coco数据集
     with open(data) as f:
-        data = yaml.load(f, Loader=yaml.FullLoader)  # model dict
+        data = yaml.load(f, Loader=yaml.FullLoader)  # model dict 加载数据集配置文件
     check_dataset(data)  # check
     nc = 1 if single_cls else int(data['nc'])  # number of classes
     iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95

@@ -494,17 +494,20 @@ YOLOv4 采用余弦退火学习率调度器，是为了让训练过程更平滑�
         # end epoch ----------------------------------------------------------------------------------------------------
 
         # Scheduler
-        lr = [x['lr'] for x in optimizer.param_groups]  # for tensorboard
+        lr = [x['lr'] for x in optimizer.param_groups]  # for tensorboard 提取优化器的学习率
         scheduler.step()
 
         # DDP process 0 or single-GPU
         if rank in [-1, 0]:
+            # 仅处理主进程
             # mAP
             if ema:
-                ema.update_attr(model)
-            final_epoch = epoch + 1 == epochs
+                ema.update_attr(model) # 将属性拷贝到ema
+            final_epoch = epoch + 1 == epochs # 判断是否是最后一轮
             if not opt.notest or final_epoch:  # Calculate mAP
+                # 如果是测试模式或者最后一轮则进入
                 if epoch >= 3:
+                    # 大于3轮的时候进行一次模型测试，这里测试的ema模型
                     results, maps, times = test.test(opt.data,
                                                  batch_size=batch_size*2,
                                                  imgsz=imgsz_test,

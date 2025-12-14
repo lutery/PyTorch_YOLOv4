@@ -206,11 +206,21 @@ def scale_img(img, ratio=1.0, same_shape=False):  # img(16,3,256,416), r=ratio
 
 
 def copy_attr(a, b, include=(), exclude=()):
+    '''
+    a: ema模型优化器
+    b: 模型
+    include: 那些需要记录
+    exclude: 哪些不需要记录
+    '''
     # Copy attributes from b to a, options to only include [...] and to exclude [...]
     for k, v in b.__dict__.items():
+        # 如果有传入include(len(include)) 则判断k是否在include里面
+        # 如果k以_开头则不记录，因为是内部属性，理论上不能被外部记录，否则可能会引入一些不合适的值
+        # 如果k在待排出列表也不记录
         if (len(include) and k not in include) or k.startswith('_') or k in exclude:
             continue
         else:
+            # 将属性直接在a中创建并拷贝
             setattr(a, k, v)
 
 
@@ -251,7 +261,8 @@ class ModelEMA:
             p.requires_grad_(False)
 
     def update(self, model):
-        # Update EMA parameters
+        # Update EMA parameters 这里相当于是软更新，将model的参数按照比例更新到ema模型中
+        # todo update_attr是将属性直接覆盖到ema中，而update是将model软更新到ema，这不是冲突吗？ todo 对比两个的调用地方
         with torch.no_grad():
             self.updates += 1
             # 计算权重更新衰减系数
@@ -268,5 +279,5 @@ class ModelEMA:
         # Update EMA attributes
         # 将当前模型的某些属性（如 model.training）同步到 EMA 模型中。
         # 遍历模型的属性，根据 include 和 exclude 的条件，将属性从当前模型复制到 EMA 模型
-        # todo 查看在哪里调用
+        # 查看在哪里调用 在模型优化器调用完 step后，会调用
         copy_attr(self.ema, model, include, exclude)
