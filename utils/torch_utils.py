@@ -171,10 +171,46 @@ def model_info(model, verbose=False, img_size=640):
 
     logger.info(f"Model Summary: {len(list(model.modules()))} layers, {n_p} parameters, {n_g} gradients{fs}")
 
+'''
+在 PyTorch 里，`nn.Linear(in_features, out_features)` 的权重参数 `weight` 的形状**固定定义**为：
 
+- `weight.shape == (out_features, in_features)`
+- `bias.shape == (out_features,)`
+
+原因是线性层的计算通常写成（对单个样本）：
+
+\[
+y = x W^T + b
+\]
+
+其中：
+
+- \(x\) 形状是 `(in_features,)`（或 batch 情况 `(N, in_features)`）
+- \(W\) 形状是 `(out_features, in_features)`，所以 \(W^T\) 是 `(in_features, out_features)`
+- 这样 \(x (in\_features) \times W^T (in\_features, out\_features) \Rightarrow y (out\_features)\)
+
+对应到你的代码：
+
+```python
+filters = model.fc.weight.shape[1]
+```
+
+- `model.fc` 是最后的全连接层
+- `model.fc.weight.shape[1]` 就是 `in_features`（输入特征维度）
+- `model.fc.weight.shape[0]` 就是 `out_features`（输出类别数，比如 ImageNet 的 1000 类）
+
+所以你看到的现象“`shape[1]` 是输入特征维度、`shape[0]` 是输出特征维度”，不是巧合，而是 **PyTorch 对 Linear 权重张量的约定**。
+'''
 def load_classifier(name='resnet101', n=2):
+    '''
+    加载指定的预训练模型，然后更改其最后的全连接层以适应新的分类任务
+    
+    :param name: Description
+    :param n: Description
+    '''
+
     # Loads a pretrained model reshaped to n-class output
-    model = torchvision.models.__dict__[name](pretrained=True)
+    model = torchvision.models.__dict__[name](pretrained=True) # 加载预训练模型
 
     # ResNet model properties
     # input_size = [3, 224, 224]
@@ -184,10 +220,11 @@ def load_classifier(name='resnet101', n=2):
     # std = [0.229, 0.224, 0.225]
 
     # Reshape output to n classes
-    filters = model.fc.weight.shape[1]
-    model.fc.bias = nn.Parameter(torch.zeros(n), requires_grad=True)
-    model.fc.weight = nn.Parameter(torch.zeros(n, filters), requires_grad=True)
-    model.fc.out_features = n
+    filters = model.fc.weight.shape[1] # 这里shape[1]是输入的特征数量，因为shape[0]是输出的类别数量 todo 为啥？
+    # 然后重新创建一个全连接层
+    model.fc.bias = nn.Parameter(torch.zeros(n), requires_grad=True)   # 创建新的偏置
+    model.fc.weight = nn.Parameter(torch.zeros(n, filters), requires_grad=True) # 创建新的权重
+    model.fc.out_features = n # 修改输出类别数量
     return model
 
 

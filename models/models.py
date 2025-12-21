@@ -842,17 +842,20 @@ def load_darknet_weights(self, weights, cutoff=-1):
         self.version = np.fromfile(f, dtype=np.int32, count=3)  # (int32) version info: major, minor, revision 权重版本号码
         self.seen = np.fromfile(f, dtype=np.int64, count=1)  # (int64) number of images seen during training 训练图片数量
 
-        weights = np.fromfile(f, dtype=np.float32)  # the rest are weights
+        weights = np.fromfile(f, dtype=np.float32)  # the rest are weights 剩余的部分就是权重的
 
     ptr = 0
+    # 仅加载骨干网络的模型
+    # modef应该存储的是模型的配置信息，而module存储的是具体的模型层
     for i, (mdef, module) in enumerate(zip(self.module_defs[:cutoff], self.module_list[:cutoff])):
-        if mdef['type'] == 'convolutional':
-            conv = module[0]
-            if mdef['batch_normalize']:
+        if mdef['type'] == 'convolutional': # 如果是卷积层
+            conv = module[0]  # 卷积层
+            if mdef['batch_normalize']: # 如果有批归一化层
                 # Load BN bias, weights, running mean and running variance
-                bn = module[1]
-                nb = bn.bias.numel()  # number of biases
-                # Bias
+                bn = module[1]  # 批归一化层
+                nb = bn.bias.numel()  # number of biases # 获取偏置的数量
+                # 按照数据的分布提取批归一化层的参数
+                # Bias 
                 bn.bias.data.copy_(torch.from_numpy(weights[ptr:ptr + nb]).view_as(bn.bias))
                 ptr += nb
                 # Weight
@@ -865,12 +868,12 @@ def load_darknet_weights(self, weights, cutoff=-1):
                 bn.running_var.data.copy_(torch.from_numpy(weights[ptr:ptr + nb]).view_as(bn.running_var))
                 ptr += nb
             else:
-                # Load conv. bias
+                # Load conv. bias 如果没有批归一化，则加载卷积层的偏置，因为如果有了批归一化，卷积层通常不会设置偏置，因为没用
                 nb = conv.bias.numel()
                 conv_b = torch.from_numpy(weights[ptr:ptr + nb]).view_as(conv.bias)
                 conv.bias.data.copy_(conv_b)
                 ptr += nb
-            # Load conv. weights
+            # Load conv. weights 最后加载卷积层的信息
             nw = conv.weight.numel()  # number of weights
             conv.weight.data.copy_(torch.from_numpy(weights[ptr:ptr + nw]).view_as(conv.weight))
             ptr += nw

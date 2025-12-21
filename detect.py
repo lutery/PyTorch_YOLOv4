@@ -23,6 +23,7 @@ from utils.general import *
 
 def load_classes(path):
     # Loads *.names file at 'path'
+    # 加载标签文件，标签文件中每一行代表一个类别名称
     with open(path, 'r') as f:
         names = f.read().split('\n')
     return list(filter(None, names))  # filter removes empty strings (such as last line)
@@ -46,36 +47,40 @@ def detect(save_img=False):
         #model = attempt_load(weights, map_location=device)  # load FP32 model
         #imgsz = check_img_size(imgsz, s=model.stride.max())  # check img_size
     except:
+        # 从原始darknet权重加载
         load_darknet_weights(model, weights[0])
     model.to(device).eval()
     if half:
-        model.half()  # to FP16
+        model.half()  # to FP16 切换到半精度
 
     # Second-stage classifier
-    classify = False
+    # todo 这里是干嘛的，重新创建一个分类器？
+    classify = False 
     if classify:
+        # 感觉这里没用啊 todo 为啥
         modelc = load_classifier(name='resnet101', n=2)  # initialize
         modelc.load_state_dict(torch.load('weights/resnet101.pt', map_location=device)['model'])  # load weights
         modelc.to(device).eval()
 
     # Set Dataloader
+    # 这里估计就是加载测试集合
     vid_path, vid_writer = None, None
     if webcam:
-        view_img = True
-        cudnn.benchmark = True  # set True to speed up constant image size inference
-        dataset = LoadStreams(source, img_size=imgsz)
+        view_img = True # 如果是摄像头，则显示图像
+        cudnn.benchmark = True  # set True to speed up constant image size inference 这是为了性能优化，提高推理速度
+        dataset = LoadStreams(source, img_size=imgsz) # 加载视频流或者摄像头
     else:
-        save_img = True
-        dataset = LoadImages(source, img_size=imgsz, auto_size=64)
+        save_img = True # 如果是普通的图片加载，则保存图像
+        dataset = LoadImages(source, img_size=imgsz, auto_size=64) # 加载图片或者视频文件
 
     # Get names and colors
-    names = load_classes(names)
-    colors = [[random.randint(0, 255) for _ in range(3)] for _ in range(len(names))]
+    names = load_classes(names) 
+    colors = [[random.randint(0, 255) for _ in range(3)] for _ in range(len(names))] # 为每个标签随机生成一种颜色
 
     # Run inference
     t0 = time.time()
     img = torch.zeros((1, 3, imgsz, imgsz), device=device)  # init img
-    _ = model(img.half() if half else img) if device.type != 'cpu' else None  # run once
+    _ = model(img.half() if half else img) if device.type != 'cpu' else None  # run once 提前运行一次看看是否存在问题
     for path, img, im0s, vid_cap in dataset:
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32

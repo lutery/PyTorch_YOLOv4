@@ -171,10 +171,12 @@ class _RepeatSampler(object):
             yield from iter(self.sampler)
 
 
-class LoadImages:  # for inference
+class LoadImages:  # for inference 加载图片和视频文件的类
     def __init__(self, path, img_size=640, auto_size=32):
         p = str(Path(path))  # os-agnostic
         p = os.path.abspath(p)  # absolute path
+        # 读取路径，并排序
+        # 同样的也是为了统一处理，则转换为列表
         if '*' in p:
             files = sorted(glob.glob(p, recursive=True))  # glob
         elif os.path.isdir(p):
@@ -184,22 +186,25 @@ class LoadImages:  # for inference
         else:
             raise Exception('ERROR: %s does not exist' % p)
 
+        # 根据不同的文件类型分为图片和视频
         images = [x for x in files if x.split('.')[-1].lower() in img_formats]
         videos = [x for x in files if x.split('.')[-1].lower() in vid_formats]
         ni, nv = len(images), len(videos)
 
-        self.img_size = img_size
-        self.auto_size = auto_size
-        self.files = images + videos
-        self.nf = ni + nv  # number of files
-        self.video_flag = [False] * ni + [True] * nv
-        self.mode = 'images'
+        self.img_size = img_size # 图片的大小
+        self.auto_size = auto_size # 自动调整大小的步长
+        self.files = images + videos # 记录所有的文件路径
+        self.nf = ni + nv  # number of files 记录总的文件数量
+        self.video_flag = [False] * ni + [True] * nv # 掩码，分辨图片和视频文件信息
+        self.mode = 'images' # 当前的模式，默认是图片模式
         if any(videos):
+            # 如果有视频则打开第一个视频
             self.new_video(videos[0])  # new video
         else:
-            self.cap = None
+            self.cap = None # 视频捕获对象，如果没有视频则设置为None
+        # 至少要有图片或者视频
         assert self.nf > 0, 'No images or videos found in %s. Supported formats are:\nimages: %s\nvideos: %s' % \
-                            (p, img_formats, vid_formats)
+                            (p, img_formats, vid_formats) 
 
     def __iter__(self):
         self.count = 0
@@ -244,9 +249,10 @@ class LoadImages:  # for inference
         return path, img, img0, self.cap
 
     def new_video(self, path):
-        self.frame = 0
+        # 用opencv打开视频文件
+        self.frame = 0 # 表示当前视频的帧数
         self.cap = cv2.VideoCapture(path)
-        self.nframes = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.nframes = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)) # 表示视频的总帧数
 
     def __len__(self):
         return self.nf  # number of files
@@ -309,50 +315,90 @@ class LoadWebcam:  # for inference
         return 0
 
 
-class LoadStreams:  # multiple IP or RTSP cameras
+class LoadStreams:  # multiple IP or RTSP cameras 这里是用来加载流式数据源的，比如摄像头或者视频流
     def __init__(self, sources='streams.txt', img_size=640):
+        '''
+        Docstring for __init__
+        
+        :param self: Description
+        :param sources: 来源，可以是一个文件，文件中存储了多个视频流的地址，也可以是一个地址
+        :param img_size: 图片的大小，将来源的信息resize到这个大小
+        '''
+
         self.mode = 'images'
         self.img_size = img_size
 
         if os.path.isfile(sources):
+            # 按照设计，如果是文件，估计是一个txt文件，里面存储了多个视频流的地址
             with open(sources, 'r') as f:
                 sources = [x.strip() for x in f.read().splitlines() if len(x.strip())]
         else:
+            # 否则就直接作为一个地址，但是为了统一处理，转换为列表
             sources = [sources]
 
         n = len(sources)
-        self.imgs = [None] * n
+        self.imgs = [None] * n # 有多少个来源，则创建多少个空的图片占位符
         self.sources = sources
-        for i, s in enumerate(sources):
+        for i, s in enumerate(sources): # 遍历所有来源
             # Start the thread to read frames from the video stream
             print('%g/%g: %s... ' % (i + 1, n, s), end='')
-            cap = cv2.VideoCapture(eval(s) if s.isnumeric() else s)
+            # val(s) 的作用是将字符串s转换为对应的Python表达式，比如 “0” 会被转换为整数0，”1+1“会被转换为整数2，这里估计就是当作类型转换使用
+            # 不推荐用 eval，eval() 会执行任意表达式，有安全风险（只要输入可控，就可能被注入执行代码）。这里的场景其实只需要把数字字符串转成 int，用 eval 属于“杀鸡用牛刀”。
+            cap = cv2.VideoCapture(eval(s) if s.isnumeric() else s) # 利用opencv的加载函数加载视频流，如果是数字，说明书是摄像头，如果不是说明可能是视频流地址
             assert cap.isOpened(), 'Failed to open %s' % s
             w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             fps = cap.get(cv2.CAP_PROP_FPS) % 100
-            _, self.imgs[i] = cap.read()  # guarantee first frame
-            thread = Thread(target=self.update, args=([i, cap]), daemon=True)
-            print(' success (%gx%g at %.2f FPS).' % (w, h, fps))
+            _, self.imgs[i] = cap.read()  # guarantee first frame 加载第一帧到self.imgs中
+            thread = Thread(target=self.update, args=([i, cap]), daemon=True) # 这里每一个源都创建一个线程来更新图片
+            print(' success (%gx%g at %.2f FPS).' % (w, h, fps)) # 打印加载流的尺寸和帧数信息
             thread.start()
         print('')  # newline
 
         # check for common shapes
-        s = np.stack([letterbox(x, new_shape=self.img_size)[0].shape for x in self.imgs], 0)  # inference shapes
-        self.rect = np.unique(s, axis=0).shape[0] == 1  # rect inference if all shapes equal
+        s = np.stack([letterbox(x, new_shape=self.img_size)[0].shape for x in self.imgs], 0)  # inference shapes todo 这里是将所有图片都resize到指定大小，然后获取shape
+        # np.unique(s, axis=0) 将相同shape的图片合并，然后判断合并后的shape数量是否为1
+        # 如果等于1 表示所有图片的shape都是相同的，可以进行矩形推理
+        self.rect = np.unique(s, axis=0).shape[0] == 1  # rect inference if all shapes equal 
         if not self.rect:
+            '''
+            这个 warning 的意思是：**你传入的多个视频流/摄像头源，它们的原始分辨率或宽高比不一致**，所以代码检测到“各路流经过 `letterbox()` 后的推理输入形状不完全相同”，因此提示你为了性能最好提供相同形状的流。
+
+            在 `LoadStreams.__init__` 里有这段逻辑：
+
+            - 先对每路流的**第一帧**做一次 `letterbox(x, new_shape=self.img_size)`，拿到结果的 `shape`
+            - 把所有 shape `np.stack` 后做 `np.unique(...).shape[0] == 1`
+            - 如果全部相同：`self.rect = True`（可用“矩形推理/rect inference”优化）
+            - 否则：`self.rect = False` 并打印这个 warning
+
+            为什么“不同 shape 会影响性能”？
+
+            - 当 `self.rect=True` 时，后续 `__next__` 会用 `letterbox(..., auto=True)`（把 padding 尽量对齐到 32 的倍数且更贴合原始比例），**减少无效 padding**，通常更快、显存更省。
+            - 当多路流的宽高比不同，想要“统一用同一种更省 padding 的矩形形状”做不到，于是退化成 `self.rect=False`，后续会更倾向于把所有输入硬塞到固定 `img_size`（padding 更多），性能可能差一点。
+
+            重要的是：**这不是错误，不会导致程序不能跑**，只是提醒你性能不是最优。
+
+            你可以怎么处理：
+
+            1. **最推荐**：让多路流的输出分辨率/宽高比一致（例如都设为 1280×720）。
+            2. 不在乎性能：忽略该 warning 即可。
+            3. 需要我帮你“消除 warning/改检测逻辑”：我可以给出一个小改动，让 shape 检测按固定 `img_size`（`auto=False`）来算，这样通常不会触发 warning，但也等于放弃 rect 优化。
+            '''
             print('WARNING: Different stream shapes detected. For optimal performance supply similarly-shaped streams.')
 
     def update(self, index, cap):
+        # index: 当前流的搜印
         # Read next stream frame in a daemon thread
+        # 在子线程里面不断读取视频流的下一帧，并更新到self.imgs中对应的位置
+        # 这里用子线程为啥可以，因为这是io流，所以对于python的gIL锁不会有太大影响
         n = 0
         while cap.isOpened():
             n += 1
             # _, self.imgs[index] = cap.read()
-            cap.grab()
+            cap.grab() # 跳过一些帧，提高读取效率，一来为了缓解cpu压力、二来降低延迟，避免积压、三来连续帧之间变化不大，不必每帧都处理
             if n == 4:  # read every 4th frame
-                _, self.imgs[index] = cap.retrieve()
-                n = 0
+                _, self.imgs[index] = cap.retrieve() # 真正读取一帧
+                n = 0 # 重置计数器
             time.sleep(0.01)  # wait time
 
     def __iter__(self):
