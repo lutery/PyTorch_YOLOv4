@@ -341,11 +341,20 @@ def box_iou(box1, box2):
         # box = 4xn
         return (box[2] - box[0]) * (box[3] - box[1])
 
-    area1 = box_area(box1.T)
-    area2 = box_area(box2.T)
+    # 这里T将box1和box2的形状从 (N, 4) 和 (M, 4) 转换为 (4, N) 和 (4, M)
+    # 然后一次性计算所有边界框的面积
+    area1 = box_area(box1.T) # 计算每个边界框的面积，box1.T的形状是4xn， area shape is (n,)
+    area2 = box_area(box2.T) # 计算每个边界框的面积，box2.T的形状是4xm， area shape is (m,)
 
     # inter(N,M) = (rb(N,M,2) - lt(N,M,2)).clamp(0).prod(2)
+    # 2: 获取的是右下角坐标
+    # torch.min(box1[:, None, 2:], box2[:, 2:]): 是计算右下角的坐标最小值
+    # 反之则torch.max(box1[:, None, :2], box2[:, :2]) 是计算左上角坐标的最大值
+    # 可以画图可知 这里是在计算交集区域的宽度和高度
+    # .prod(2) 是将宽度和高度相乘，得到交集面积
+    # 其他看md文档，最重要的是要计算每一个box1和box2的iou值
     inter = (torch.min(box1[:, None, 2:], box2[:, 2:]) - torch.max(box1[:, None, :2], box2[:, :2])).clamp(0).prod(2)
+    # 最后计算IoU值，也就是交集面积除以并集面积 shape (N,M)
     return inter / (area1[:, None] + area2 - inter)  # iou = inter / (area1 + area2 - inter)
 
 
@@ -359,47 +368,88 @@ def wh_iou(wh1, wh2):
 
 def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, merge=False, classes=None, agnostic=False):
     """Performs Non-Maximum Suppression (NMS) on inference results
+    非极大值抑制
+
+    params prediction: 模型预测的检测结果 注意：prediction的第一个维度是图片的数量batch_size
+    conf_thres: 置信度阈值
+    iou_thres: IoU阈值
+    merge: 是否合并重叠框
+    classes: 只保留指定类别的检测结果
+    agnostic: 是否进行类别无关的NMS
     Returns:
          detections with shape: nx6 (x1, y1, x2, y2, conf, cls)
     """
 
-    nc = prediction[0].shape[1] - 5  # number of classes
-    xc = prediction[..., 4] > conf_thres  # candidates
+    nc = prediction[0].shape[1] - 5  # number of classes 预测结果的每一行包含 [x, y, w, h, obj_conf, class_scores...]，从第六个元素开始就是预测类别的one-hot编码，所以 类别总数等于列数减去5
+    xc = prediction[..., 4] > conf_thres  # candidates 由于预测的结果在第五个位置是目标置信度，所以这里是获取所有目标置信度大于阈值的预测结果
 
     # Settings
-    min_wh, max_wh = 2, 4096  # (pixels) minimum and maximum box width and height
-    max_det = 300  # maximum number of detections per image
-    time_limit = 10.0  # seconds to quit after
-    redundant = True  # require redundant detections
-    multi_label = nc > 1  # multiple labels per box (adds 0.5ms/img)
+    min_wh, max_wh = 2, 4096  # (pixels) minimum and maximum box width and height 限制边界框的最小和最大宽高 todo 为啥？不是基于原图的吗？
+    max_det = 300  # maximum number of detections per image 限制每个图像的最大检测数量
+    time_limit = 10.0  # seconds to quit after 设置超时时间，防止处理时间过长
+    redundant = True  # require redundant detections 这个是啥意思？ todo
+    multi_label = nc > 1  # multiple labels per box (adds 0.5ms/img) 如果类别数大于1，则表示预测的目标存在多种类别的可能性
 
-    t = time.time()
-    output = [torch.zeros(0, 6)] * prediction.shape[0]
-    for xi, x in enumerate(prediction):  # image index, image inference
+    t = time.time() # 计时开始
+    output = [torch.zeros(0, 6)] * prediction.shape[0] # output = [torch.zeros(0, 6)] * batch_size 初始化输出列表，每个元素对应一张图像的检测结果，初始为空张量，形状为 (0, 6)，表示没有检测到任何目标 todo 具体的作用
+    for xi, x in enumerate(prediction):  # image index, image inference 便利每张图像的预测结果，xi是图像索引，x是该图像的预测结果
         # Apply constraints
         # x[((x[..., 2:4] < min_wh) | (x[..., 2:4] > max_wh)).any(1), 4] = 0  # width-height
-        x = x[xc[xi]]  # confidence
+        # xc[xi] is (n,) boolean tensor，提取对应索引图片的置信度掩码
+        x = x[xc[xi]]  # confidence 将提取出来的掩码应用到预测结果上，保留置信度大于阈值的预测结果
 
         # If none remain process next image
-        if not x.shape[0]:
+        if not x.shape[0]: 
             continue
 
         # Compute conf
-        x[:, 5:] *= x[:, 4:5]  # conf = obj_conf * cls_conf
+        x[:, 5:] *= x[:, 4:5]  # conf = obj_conf * cls_conf  将置信度乘以类别概率，得到最终的类别置信度
 
         # Box (center x, center y, width, height) to (x1, y1, x2, y2)
-        box = xywh2xyxy(x[:, :4])
+        box = xywh2xyxy(x[:, :4]) # 将yolo格式的边界框转换为xyxy格式
 
         # Detections matrix nx6 (xyxy, conf, cls)
         if multi_label:
+            # x shape is (n, 5 + num_classes)
+            # x[:, 5:] > conf_thres # shape is (n, num_classes)，类型bool，第 k 个框在第 c 类上的置信度是否过阈值
+            # .nonzero(as_tuple=False) # shape is (m, 2)，对这个布尔矩阵取非零（True）位置索引，满足阈值的 (框, 类别) 组合数量（注意 m 可能大于 n，因为一个框可能命中多个类别）
+            # 每一行是 [row_index, col_index]，也就是：
+            # row_index：框的索引（0..n-1）
+            # col_index：类别索引（0..nc-1）
+            # .T 然后解包给 i, j，T 把 (m, 2) 转成 (2, m)，于是：
+            #    i.shape == (m,)：每条命中对应的框索引
+            #    j.shape == (m,)：每条命中对应的类别索引
             i, j = (x[:, 5:] > conf_thres).nonzero(as_tuple=False).T
-            x = torch.cat((box[i], x[i, j + 5, None], j[:, None].float()), 1)
+            # box.shape == (n, 4)，每行是 [x1, y1, x2, y2]
+            # box[i].shape == (m, 4)，取出每个命中项对应的框坐标（同一个原始框如果命中多个类，会重复出现多次）
+            # x[i, j + 5, None]
+            # 把类别索引 j(0..nc-1) 平移到 x 里对应类别置信度所在列（从第 6 列开始）
+            # x[i, j + 5] 是 高级索引：逐元素取出每个命中项的那一个类别置信度，x[i, j + 5].shape == (m,)
+            # 末尾的 , None 是为了扩维成列向量：x[i, j + 5, None].shape == (m, 1)
+            # j[:, None].float()：j.shape == (m,) → j[:, None].shape == (m, 1)，.float()：类别 id 转 float（因为后面整体拼成一个浮点张量）
+            # torch.cat(..., 1)：把三块在列维度拼接(m, 4) + (m, 1) + (m, 1) → (m, 6)，最终新的 x：x.shape == (m, 6)列含义：[x1, y1, x2, y2, conf, cls]
+            x = torch.cat((box[i], x[i, j + 5, None], j[:, None].float()), 1) # 这句是在把“命中”展开成最终 NMS 需要的检测格式：(x1, y1, x2, y2, conf, cls)。
         else:  # best class only
+            # 如果只是单标签，那么x[:, 5:] 提取出类别置信度部分
+            # .max(1, keepdim=True) 在类别维度上取最大值，返回值是 (values, indices)
+            # values：每个框的最高类别置信度 scores，shape (n, 1)
+            # indices：每个框对应的最高类别索引 cls，shape (n, 1)
             conf, j = x[:, 5:].max(1, keepdim=True)
+            # conf.view(-1) > conf_thres # shape is (n,) boolean tensor，筛选出置信度过阈值的框
+            # torch.cat((box, conf, j.float()), 1)[conf.view(-1) > conf_thres] # shape is (m, 6)，仅保留置信度过阈值的框
             x = torch.cat((box, conf, j.float()), 1)[conf.view(-1) > conf_thres]
 
         # Filter by class
         if classes:
+            # 类别过滤，有的时候仅需要保留指定类别的检测结果
+            # x.shape == (n, 6) 每行：[x1, y1, x2, y2, conf, cls] 其中 x[:, 5] 是类别 id（一般是 float，但值像 0.0, 1.0, ...）
+            # x[:, 5:6] 取第 6 列（类别列），但用 5:6 保持二维： shape == (n, 1) # 如果写成 x[:, 5]，shape 会是 (n,)；这里保留 (n,1) 是为了后面更方便广播比较。
+            # torch.tensor(classes, device=x.device) 把 Python 的 classes（例如 [0, 2, 7]）变成 tensor，并放到和 x 同一设备（CPU/GPU）上，避免 device mismatch 报错。
+            # torch.tensor(classes).shape == (k,)，k 是要保留的类别数量。
+            # (x[:, 5:6] == torch.tensor(classes, device=x.device))
+            # 左边 (n, 1) ， 右边 (k,) 可视为 (1, k)， 比较结果变为：(n, k) 的布尔矩阵 = 含义：第 i 个框的类别是否等于 classes 里的第 j 个类别。结果 shape == (n, k)，dtype 为 bool
+            # .any(1) 在维度 1（类别列表维度 k）上做 “任意为 True”：shape: (n, k) -> (n,) 含义：对每个框来说，只要它的 cls 等于 classes 中任意一个类别，就标记为 True。
+            # x[mask]，mask.shape == (n,) 的布尔索引， 过滤后：x.shape == (m, 6)，其中 m <= n，表示保留下来的框数量
             x = x[(x[:, 5:6] == torch.tensor(classes, device=x.device)).any(1)]
 
         # Apply finite constraint
@@ -409,26 +459,34 @@ def non_max_suppression(prediction, conf_thres=0.1, iou_thres=0.6, merge=False, 
         # If none remain process next image
         n = x.shape[0]  # number of boxes
         if not n:
+            # 如果没有剩余的检测结果，继续处理下一张图像
             continue
 
         # Sort by confidence
         # x = x[x[:, 4].argsort(descending=True)]
 
         # Batched NMS
-        c = x[:, 5:6] * (0 if agnostic else max_wh)  # classes
-        boxes, scores = x[:, :4] + c, x[:, 4]  # boxes (offset by class), scores
-        i = torch.ops.torchvision.nms(boxes, scores, iou_thres)
+        c = x[:, 5:6] * (0 if agnostic else max_wh)  # classes 实现 “按类分组的 NMS”（class-aware NMS） c.shape == (n, 1)
+        boxes, scores = x[:, :4] + c, x[:, 4]  # boxes (offset by class), scores 后面把 c 加到 box 坐标上，会让不同类别的框在坐标空间里被“拉开很远”，从而即使它们物理上重叠很大，NMS 也不会把跨类别的框相互抑制。
+        # boxes.shape == (n, 4) ； scores.shape == (n,)
+        i = torch.ops.torchvision.nms(boxes, scores, iou_thres) # i.shape == (k,)
+        # 按 scores 从高到低排序
+        # 依次取最高分框，移除与其 IoU > iou_thres 的其它框
+        # 返回保留下来的索引
         if i.shape[0] > max_det:  # limit detections
+            # 如果一个图像的检测结果过多，则只保留前 max_det 个最高置信度的结果
             i = i[:max_det]
         if merge and (1 < n < 3E3):  # Merge NMS (boxes merged using weighted mean)
             # update boxes as boxes(i,4) = weights(i,n) * boxes(n,4)
-            iou = box_iou(boxes[i], boxes) > iou_thres  # iou matrix
-            weights = iou * scores[None]  # box weights
+            iou = box_iou(boxes[i], boxes) > iou_thres  # iou matrix 过滤出与保留框重叠的其他框
+            weights = iou * scores[None]  # box weights 根据 IoU 乘以 置信度计算权重，这里要注意 iou是bool类型，True/False会被转换为1/0
+            # 对每个保留框，把与它重叠的一堆框按 score 加权求平均，得到一个“更稳”的框位置
             x[i, :4] = torch.mm(weights, x[:, :4]).float() / weights.sum(1, keepdim=True)  # merged boxes
             if redundant:
-                i = i[iou.sum(1) > 1]  # require redundancy
+                # todo 这步的作用是啥？
+                i = i[iou.sum(1) > 1]  # require redundancy iou.sum(1)：对每个保留框，看它匹配到多少个重叠框 ； > 1 表示至少有“冗余/重叠”的其它框参与融合（不仅仅是它自己）
 
-        output[xi] = x[i]
+        output[xi] = x[i] # 最终输出当前图片的检测结果： x[i].shape == (k_final, 6) 每行仍是 [x1, y1, x2, y2, conf, cls]
         if (time.time() - t) > time_limit:
             break  # time limit exceeded
 

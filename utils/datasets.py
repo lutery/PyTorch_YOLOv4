@@ -194,7 +194,7 @@ class LoadImages:  # for inference 加载图片和视频文件的类
         self.img_size = img_size # 图片的大小
         self.auto_size = auto_size # 自动调整大小的步长
         self.files = images + videos # 记录所有的文件路径
-        self.nf = ni + nv  # number of files 记录总的文件数量
+        self.nf = ni + nv  # number of files 记录将要加载的总的文件数量
         self.video_flag = [False] * ni + [True] * nv # 掩码，分辨图片和视频文件信息
         self.mode = 'images' # 当前的模式，默认是图片模式
         if any(videos):
@@ -211,29 +211,42 @@ class LoadImages:  # for inference 加载图片和视频文件的类
         return self
 
     def __next__(self):
-        if self.count == self.nf:
-            raise StopIteration
-        path = self.files[self.count]
+        '''
+        Docstring for __next__
+        加载视频文件或者图片文件，进行预处理，然后返回预处理后的数据
+        
+        :param self: Description
+        :return: Description
+        :rtype: Any
 
-        if self.video_flag[self.count]:
+        return ： 返回当前加载的文件路径； img 处理好后的图片数据； img0 原始图片数据； vid_cap 视频捕获对象，如果是图片则返回None
+        '''
+
+
+        # 如果便利的数量超过了文件数量，则停止迭代
+        if self.count == self.nf: 
+            raise StopIteration
+        path = self.files[self.count] # 提取当前的文件路径
+
+        if self.video_flag[self.count]: # 如果当前迭代到了视频文件区，则从视频文件里面读取图片信息
             # Read video
             self.mode = 'video'
             ret_val, img0 = self.cap.read()
-            if not ret_val:
+            if not ret_val: # 这里表示视频读取完，如果读取完则读取下一个视频或者停止迭代
                 self.count += 1
                 self.cap.release()
-                if self.count == self.nf:  # last video
+                if self.count == self.nf:  # last video 视频文件读取完毕，则停止迭代
                     raise StopIteration
                 else:
                     path = self.files[self.count]
-                    self.new_video(path)
-                    ret_val, img0 = self.cap.read()
-
+                    self.new_video(path)  # 构建视频
+                    ret_val, img0 = self.cap.read() # 读取第一帧
+ 
             self.frame += 1
             print('video %g/%g (%g/%g) %s: ' % (self.count + 1, self.nf, self.frame, self.nframes, path), end='')
 
         else:
-            # Read image
+            # Read image 加载图片文件
             self.count += 1
             img0 = cv2.imread(path)  # BGR
             assert img0 is not None, 'Image Not Found ' + path
@@ -244,8 +257,7 @@ class LoadImages:  # for inference 加载图片和视频文件的类
 
         # Convert
         img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
-        img = np.ascontiguousarray(img)
-
+        img = np.ascontiguousarray(img) # 将数组的内存重新组织为连续的内存块，提升后续处理效率
         return path, img, img0, self.cap
 
     def new_video(self, path):
@@ -397,7 +409,7 @@ class LoadStreams:  # multiple IP or RTSP cameras 这里是用来加载流式数
             # _, self.imgs[index] = cap.read()
             cap.grab() # 跳过一些帧，提高读取效率，一来为了缓解cpu压力、二来降低延迟，避免积压、三来连续帧之间变化不大，不必每帧都处理
             if n == 4:  # read every 4th frame
-                _, self.imgs[index] = cap.retrieve() # 真正读取一帧
+                _, self.imgs[index] = cap.retrieve() # 真正读取一帧，便覆盖之前的帧
                 n = 0 # 重置计数器
             time.sleep(0.01)  # wait time
 
@@ -406,21 +418,32 @@ class LoadStreams:  # multiple IP or RTSP cameras 这里是用来加载流式数
         return self
 
     def __next__(self):
+        '''
+        Docstring for __next__
+        提起当前采集到的帧，然后进行预处理，返回预处理后的数据
+
+        :param self: Description
+
+        return： 返回采集的数据来源，如果是文件则是文件路径，如果是摄像头则是摄像头的编号； img 处理好后的图片数据； img0 原始图片数据； None 估计是为了兼容
+        '''
+
         self.count += 1
-        img0 = self.imgs.copy()
-        if cv2.waitKey(1) == ord('q'):  # q to quit
+        img0 = self.imgs.copy() # 将当前所有流的图片复制一份
+        if cv2.waitKey(1) == ord('q'):  # q to quit 如果将q键按下，则退出
             cv2.destroyAllWindows()
             raise StopIteration
 
-        # Letterbox
+        # Letterbox 保持图片的宽高比不变，进行resize和padding
         img = [letterbox(x, new_shape=self.img_size, auto=self.rect)[0] for x in img0]
 
-        # Stack
+        # Stack 堆叠图片
         img = np.stack(img, 0)
 
-        # Convert
+        # Convert 
+        # img[:, :, :, ::-1]： BGR转RGB
+        # transpose(0, 3, 1, 2)：将图片的维度从 (batch, height, width, channels) 转换为 (batch, channels, height, width)
         img = img[:, :, :, ::-1].transpose(0, 3, 1, 2)  # BGR to RGB, to bsx3x416x416
-        img = np.ascontiguousarray(img)
+        img = np.ascontiguousarray(img) # 将数组的内存重新组织为连续的内存块，提升后续处理效率
 
         return self.sources, img, img0, None
 

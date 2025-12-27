@@ -76,6 +76,7 @@ def select_device(device='', batch_size=None):
 
 
 def time_synchronized():
+    # torch.cuda.synchronize()：将cuda操作更改有同步方式，这样可以i更加准确的统计显卡的耗时
     torch.cuda.synchronize() if torch.cuda.is_available() else None
     return time.time()
 

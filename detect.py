@@ -86,11 +86,11 @@ def detect(save_img=False):
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
         if img.ndimension() == 3:
-            img = img.unsqueeze(0)
+            img = img.unsqueeze(0) # 增加一个batch维度，因为模型需要4维输入
 
         # Inference
-        t1 = time_synchronized()
-        pred = model(img, augment=opt.augment)[0]
+        t1 = time_synchronized() # 统计推理耗时
+        pred = model(img, augment=opt.augment)[0] # 模型推理，获得预测结果
 
         # Apply NMS
         pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
