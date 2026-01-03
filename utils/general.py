@@ -196,19 +196,28 @@ def xywh2xyxy(x):
 
 
 def scale_coords(img1_shape, coords, img0_shape, ratio_pad=None):
+    '''
+    Docstring for scale_coords
+     返回处理后的检测框坐标，这里的coords已经是相对于原始图像的坐标了
+    
+    :param img1_shape: 经过处理后的图像 shape，通常是模型输入图像的形状，格式为 (height, width)
+    :param coords: 经过模型预测得到的边界框坐标，格式为 (num_boxes, 4)，每个边界框由 [x1, y1, x2, y2] 表示
+    :param img0_shape: 原始图像的 shape，格式为 (height, width)
+    :param ratio_pad: 用于缩放和填充的比例和填充值，格式为 ((gain, gain), (pad_x, pad_y))
+    '''
     # Rescale coords (xyxy) from img1_shape to img0_shape
-    if ratio_pad is None:  # calculate from img0_shape
-        gain = min(img1_shape[0] / img0_shape[0], img1_shape[1] / img0_shape[1])  # gain  = old / new
-        pad = (img1_shape[1] - img0_shape[1] * gain) / 2, (img1_shape[0] - img0_shape[0] * gain) / 2  # wh padding
-    else:
+    if ratio_pad is None:  # calculate from img0_shape 如果没有传入缩放填充尺寸，则根据原始图像和处理后图像的尺寸计算
+        gain = min(img1_shape[0] / img0_shape[0], img1_shape[1] / img0_shape[1])  # gain  = old / new 对比原始图片和处理后图片的尺寸比例，取其中较小的一个，这样可以确保图像在缩放后不会超出原始图像的尺寸
+        pad = (img1_shape[1] - img0_shape[1] * gain) / 2, (img1_shape[0] - img0_shape[0] * gain) / 2  # wh padding 计算将图像填充到处理后尺寸所需的填充量，分别计算宽度和高度方向的填充量
+    else: # 如果有传入则使用传入的值
         gain = ratio_pad[0][0]
         pad = ratio_pad[1]
 
-    coords[:, [0, 2]] -= pad[0]  # x padding
+    coords[:, [0, 2]] -= pad[0]  # x padding 因为有填充，所以需要先减去填充的部分，这样才能得到正确的坐标
     coords[:, [1, 3]] -= pad[1]  # y padding
-    coords[:, :4] /= gain
-    clip_coords(coords, img0_shape)
-    return coords
+    coords[:, :4] /= gain # 然后根据缩放比例调整坐标，这样就将坐标从处理后图像的尺度转换回原始图像的尺度
+    clip_coords(coords, img0_shape) # 裁剪坐标，避免超出图像边界
+    return coords # 返回处理后的检测框坐标，这里的coords已经是相对于原始图像的坐标了
 
 
 def clip_coords(boxes, img_shape):
@@ -539,26 +548,35 @@ def print_mutation(hyp, results, yaml_file='hyp_evolved.yaml', bucket=''):
 
 
 def apply_classifier(x, model, img, im0):
+    '''
+    Docstring for apply_classifier
+    本方法的作用是对YOLO检测结果进行二次分类，以提高检测的准确性。过滤掉分类结果与初始预测类别不一致的检测结果。
+    
+    :param x: 经过nms处理后的检测结果，shape为 (batch_size, num_detections, 6)，每个检测结果包含 [x1, y1, x2, y2, conf, cls]
+    :param model: 分类模型
+    :param img: 经过处理后的图像张量，shape为 (batch_size, channels, height, width)
+    :param im0: 原始图像，通常是一个numpy数组或列表，shape为 (height, width, channels)
+    '''
     # applies a second stage classifier to yolo outputs
     im0 = [im0] if isinstance(im0, np.ndarray) else im0
-    for i, d in enumerate(x):  # per image
+    for i, d in enumerate(x):  # per image 遍历每张图像的检测结果
         if d is not None and len(d):
             d = d.clone()
 
             # Reshape and pad cutouts
-            b = xyxy2xywh(d[:, :4])  # boxes
-            b[:, 2:] = b[:, 2:].max(1)[0].unsqueeze(1)  # rectangle to square
-            b[:, 2:] = b[:, 2:] * 1.3 + 30  # pad
-            d[:, :4] = xywh2xyxy(b).long()
+            b = xyxy2xywh(d[:, :4])  # boxes 又将检测结果转换为xywh格式
+            b[:, 2:] = b[:, 2:].max(1)[0].unsqueeze(1)  # rectangle to square # 这里是将边界框调整为正方形，取宽高的最大值作为边长
+            b[:, 2:] = b[:, 2:] * 1.3 + 30  # pad # 对边界框进行扩展，扩大30%
+            d[:, :4] = xywh2xyxy(b).long() # 再次转换回xyxy格式，并将坐标转换为整数类型
 
             # Rescale boxes from img_size to im0 size
-            scale_coords(img.shape[2:], d[:, :4], im0[i].shape)
+            scale_coords(img.shape[2:], d[:, :4], im0[i].shape) # 将检测结果
 
             # Classes
-            pred_cls1 = d[:, 5].long()
-            ims = []
+            pred_cls1 = d[:, 5].long() # 提取每个检测结果的类别索引，作为初始预测类别，shape为 (num_detections,)
+            ims = [] # 根据检测框的坐标，提取对应的图像区域，并进行预处理，以便输入到分类模型中
             for j, a in enumerate(d):  # per item
-                cutout = im0[i][int(a[1]):int(a[3]), int(a[0]):int(a[2])]
+                cutout = im0[i][int(a[1]):int(a[3]), int(a[0]):int(a[2])] 
                 im = cv2.resize(cutout, (224, 224))  # BGR
                 # cv2.imwrite('test%i.jpg' % j, cutout)
 
@@ -566,9 +584,10 @@ def apply_classifier(x, model, img, im0):
                 im = np.ascontiguousarray(im, dtype=np.float32)  # uint8 to float32
                 im /= 255.0  # 0 - 255 to 0.0 - 1.0
                 ims.append(im)
-
-            pred_cls2 = model(torch.Tensor(ims).to(d.device)).argmax(1)  # classifier prediction
-            x[i] = x[i][pred_cls1 == pred_cls2]  # retain matching class detections
+            
+            # 使用分类模型对检测结果进行二次分类
+            pred_cls2 = model(torch.Tensor(ims).to(d.device)).argmax(1)  # classifier prediction shape is (num_detections,)
+            x[i] = x[i][pred_cls1 == pred_cls2]  # retain matching class detections # 仅保留分类结果与初始预测类别一致的检测结果 x[i] shape is (num_detections, 6)
 
     return x
 

@@ -81,7 +81,7 @@ def detect(save_img=False):
     t0 = time.time()
     img = torch.zeros((1, 3, imgsz, imgsz), device=device)  # init img
     _ = model(img.half() if half else img) if device.type != 'cpu' else None  # run once 提前运行一次看看是否存在问题
-    for path, img, im0s, vid_cap in dataset:
+    for path, img, im0s, vid_cap in dataset: # path是图像路径，img是预处理后的图像张量，im0s是原始图像，vid_cap是视频捕获对象
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
@@ -93,14 +93,15 @@ def detect(save_img=False):
         pred = model(img, augment=opt.augment)[0] # 模型推理，获得预测结果
 
         # Apply NMS
-        pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
-        t2 = time_synchronized()
+        pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms) # 使用nms对预测结果进行过滤，合并
+        t2 = time_synchronized() # 统计nms耗时
 
         # Apply Classifier
         if classify:
+            # 再次进行过滤，使用一个专门的分类网络，过滤掉一些错误类别错误的的检测结果
             pred = apply_classifier(pred, modelc, img, im0s)
 
-        # Process detections
+        # Process detections pred shape is (batch_size, num_detections, 6)
         for i, det in enumerate(pred):  # detections per image
             if webcam:  # batch_size >= 1
                 p, s, im0 = path[i], '%g: ' % i, im0s[i].copy()
@@ -110,38 +111,40 @@ def detect(save_img=False):
             save_path = str(Path(out) / Path(p).name)
             txt_path = str(Path(out) / Path(p).stem) + ('_%g' % dataset.frame if dataset.mode == 'video' else '')
             s += '%gx%g ' % img.shape[2:]  # print string
-            gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
+            gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh 用于将检测框坐标归一化到0-1之间 获取原图的宽高
             if det is not None and len(det):
+                # 如果存在检测结果，那么构建label，绘制检测框
                 # Rescale boxes from img_size to im0 size
-                det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
+                det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round() # 将检测框坐标从模型输入尺寸映射回原始图像尺寸
 
                 # Print results
                 for c in det[:, -1].unique():
                     n = (det[:, -1] == c).sum()  # detections per class
-                    s += '%g %ss, ' % (n, names[int(c)])  # add to string
+                    s += '%g %ss, ' % (n, names[int(c)])  # add to string 将类别和数量添加到打印字符串中
 
                 # Write results
                 for *xyxy, conf, cls in det:
-                    if save_txt:  # Write to file
+                    if save_txt:  # Write to file 这里是将检测结果的标签保存到txt文件中
                         xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
                         with open(txt_path + '.txt', 'a') as f:
                             f.write(('%g ' * 5 + '\n') % (cls, *xywh))  # label format
 
-                    if save_img or view_img:  # Add bbox to image
+                    if save_img or view_img:  # Add bbox to image 这里是绘制检测框
                         label = '%s %.2f' % (names[int(cls)], conf)
                         plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=3)
 
-            # Print time (inference + NMS)
+            # Print time (inference + NMS) 打印推理和nms时间
             print('%sDone. (%.3fs)' % (s, t2 - t1))
 
             # Stream results
             if view_img:
+                # 如果需要显示图像，则使用cv2.imshow显示
                 cv2.imshow(p, im0)
                 if cv2.waitKey(1) == ord('q'):  # q to quit
                     raise StopIteration
 
             # Save results (image with detections)
-            if save_img:
+            if save_img: # 如果需要保存图像则保存图片，如果是视频则保存视频，都使用opencv中自带的方法
                 if dataset.mode == 'images':
                     cv2.imwrite(save_path, im0)
                 else:
@@ -158,11 +161,12 @@ def detect(save_img=False):
                     vid_writer.write(im0)
 
     if save_txt or save_img:
+        # 这里是作者对macos系统的一个特殊处理，打开保存结果的文件夹
         print('Results saved to %s' % Path(out))
         if platform == 'darwin' and not opt.update:  # MacOS
-            os.system('open ' + save_path)
+            os.system('open ' + save_path) # 打开保存结果的文件夹，todo 为啥？
 
-    print('Done. (%.3fs)' % (time.time() - t0))
+    print('Done. (%.3fs)' % (time.time() - t0)) # 打印总耗时
 
 
 if __name__ == '__main__':
