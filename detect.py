@@ -54,10 +54,11 @@ def detect(save_img=False):
         model.half()  # to FP16 切换到半精度
 
     # Second-stage classifier
-    # todo 这里是干嘛的，重新创建一个分类器？
+    # 这里创建的分类器是训练一个专门的分类网络，用于对检测结果进行二次分类过滤
+    # 如果预测的结果和目标检测的结果不一致，则过滤掉该检测结果，提高检测的准确率
+    # 这里是干嘛的，重新创建一个分类器？
     classify = False 
     if classify:
-        # 感觉这里没用啊 todo 为啥
         modelc = load_classifier(name='resnet101', n=2)  # initialize
         modelc.load_state_dict(torch.load('weights/resnet101.pt', map_location=device)['model'])  # load weights
         modelc.to(device).eval()
@@ -164,7 +165,7 @@ def detect(save_img=False):
         # 这里是作者对macos系统的一个特殊处理，打开保存结果的文件夹
         print('Results saved to %s' % Path(out))
         if platform == 'darwin' and not opt.update:  # MacOS
-            os.system('open ' + save_path) # 打开保存结果的文件夹，todo 为啥？
+            os.system('open ' + save_path) # 打开保存结果的文件夹，这里是为了方便用户查看结果，但只适配了mac系统
 
     print('Done. (%.3fs)' % (time.time() - t0)) # 打印总耗时
 

@@ -121,7 +121,7 @@ todo 了解数学原理
     '''
     hyp['weight_decay'] *= total_batch_size * accumulate / nbs  # scale weight_decay
 
-    # todo 了解pg0 pg1 pg2的作用
+    # 了解pg0 pg1 pg2的作用
     # pg0存储的是非偏置、卷积、m\w的权重
     # pg1存储卷积、线性层的权重
     # pg2存储偏置的权重
@@ -183,7 +183,7 @@ todo 了解数学原理
 YOLOv4 采用余弦退火学习率调度器，是为了让训练过程更平滑、收敛更稳定、最终精度更高，同时简化超参数调整。这是现代深度学习目标检测任务中非常主流且有效的做法。
     '''
     # 输入的x是当前是第几个epoch，返回的是当前epoch的学习率
-    # todo 绘制曲线
+    # 绘制曲线:看scheduler_lf.py，这种方式的学习率调度的最大问题就是最大的训练次数定死了
     lf = lambda x: ((1 + math.cos(x * math.pi / epochs)) / 2) * (1 - hyp['lrf']) + hyp['lrf']  # cosine
     scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
     # plot_lr_scheduler(optimizer, scheduler, epochs)
@@ -319,7 +319,7 @@ YOLOv4 采用余弦退火学习率调度器，是为了让训练过程更平滑�
     maps = np.zeros(nc)  # mAP per class 创建一个空的map，用来存储每个样本的mAP
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
     scheduler.last_epoch = start_epoch - 1  # do not move 计算其实的epoch
-    scaler = amp.GradScaler(enabled=cuda) # todo
+    scaler = amp.GradScaler(enabled=cuda) # 用于混合精度训练的梯度缩放器 todo 代码中哪里体现了混合精度
     logger.info('Image sizes %g train, %g test\n'
                 'Using %g dataloader workers\nLogging results to %s\n'
                 'Starting training for %g epochs...' % (imgsz, imgsz_test, dataloader.num_workers, save_dir, epochs))
@@ -664,7 +664,7 @@ if __name__ == '__main__':
     opt.total_batch_size = opt.batch_size
     # WORLD_SIZE 参数主要用于分布式训练场景中，表示训练过程中总的进程数（通常对应使用的 GPU 数量）。当使用分布式数据并行 (DDP) 训练时，该参数帮助代码确定如何分配数据、同步梯度以及调整优化参数。如果没有设置，则默认为 1，即单 GPU 或单进程训练。
     opt.world_size = int(os.environ['WORLD_SIZE']) if 'WORLD_SIZE' in os.environ else 1
-    opt.global_rank = int(os.environ['RANK']) if 'RANK' in os.environ else -1
+    opt.global_rank = int(os.environ['RANK']) if 'RANK' in os.environ else -1 # 如果有指定RANK环境变量则使用，否则为-1，代表主进程
     # 设置日志等级
     set_logging(opt.global_rank)
     if opt.global_rank in [-1, 0]:
@@ -672,6 +672,8 @@ if __name__ == '__main__':
 
     # Resume
     if opt.resume:  # resume an interrupted run
+        # 如果是继续训练，那么先找到之前的权重文件，然后根据权重文件的路径找到之前的配置文件opt.yaml
+        # 并将这些信息存储到opt中
         ckpt = opt.resume if isinstance(opt.resume, str) else get_latest_run()  # specified or most recent path
         assert os.path.isfile(ckpt), 'ERROR: --resume checkpoint does not exist'
         cfg = opt.cfg if opt.cfg is not None else ''
@@ -681,6 +683,8 @@ if __name__ == '__main__':
         logger.info('Resuming training from %s' % ckpt)
     else:
         # opt.hyp = opt.hyp or ('hyp.finetune.yaml' if opt.weights else 'hyp.scratch.yaml')
+        # 如果是新训练，则直接检查输入参数指定的文件是否存在
+        # 从这里可以看出，训练需要三个文件：数据集配置文件、模型配置文件、超参数配置文件
         opt.data, opt.cfg, opt.hyp = check_file(opt.data), check_file(opt.cfg), check_file(opt.hyp)  # check files
         assert len(opt.cfg) or len(opt.weights), 'either --cfg or --weights must be specified'
         opt.img_size.extend([opt.img_size[-1]] * (2 - len(opt.img_size)))  # extend to 2 sizes (train, test)

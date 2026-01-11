@@ -27,6 +27,7 @@ def load_classes(path):
     return list(filter(None, names))  # filter removes empty strings (such as last line)
 
 
+# todo 待注释
 def test(data, # 测试数据集
          weights=None,
          batch_size=16,
@@ -47,7 +48,8 @@ def test(data, # 测试数据集
 
     # Initialize/load model and set device
     training = model is not None
-    if training:  # called by train.py todo 为啥训练模式只需要获取device
+    if training:  # called by train.py 为啥训练模式只需要获取device
+        # 如果有传入model，则需要保证device和模型的device一致
         device = next(model.parameters()).device  # get model device
 
     else:  # called directly 如果不是训练模式，那么可能会跳过之前的一些数据准备工作，所以这里会单独的进行一些测试模式需要的数据准备
